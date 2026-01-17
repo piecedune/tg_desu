@@ -13,6 +13,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from dotenv import load_dotenv
 
 from desu_client import DesuClient, MangaDetail
 from favorites import FavoritesStore
@@ -286,6 +287,7 @@ def _get_base_url() -> str:
 
 
 def main() -> None:
+    load_dotenv()
     token = _get_token()
     client = DesuClient(_get_base_url())
     favorites = FavoritesStore()

@@ -11,11 +11,17 @@ A Telegram bot that searches Desu manga catalog, shows manga details, and lets u
 pip install -r requirements.txt
 ```
 
-3. Configure environment variables:
+3. Create a `.env` file (you can copy `.env.example`):
 
 ```bash
-export TELEGRAM_TOKEN="your-telegram-token"
-export DESU_BASE_URL="https://desu.me"  # optional
+cp .env.example .env
+```
+
+Update `.env` with your Telegram token and (optional) Desu base URL:
+
+```
+TELEGRAM_TOKEN=your-telegram-token
+DESU_BASE_URL=https://desu.me
 ```
 
 ## Run
