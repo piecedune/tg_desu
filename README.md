@@ -1,6 +1,7 @@
 # Desu Manga Telegram Bot
 
 A Telegram bot that searches Desu manga catalog, shows manga details, and lets users manage favorites.
+The bot is built with **aiogram**.
 
 ## Setup
 
