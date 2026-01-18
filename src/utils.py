@@ -10,10 +10,20 @@ import zipfile
 
 import requests
 from PIL import Image
+from aiogram.types import CallbackQuery
 
 from desu_client import MangaDetail
 
 logger = logging.getLogger(__name__)
+
+
+async def safe_callback_answer(callback: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:
+    """Safely answer callback query, ignoring timeout errors."""
+    try:
+        await callback.answer(text=text, show_alert=show_alert)
+    except Exception:
+        pass  # Query expired or already answered
+
 
 # Lazy import to avoid circular imports
 _favorites_store = None
@@ -97,21 +107,64 @@ def download_image(url: str) -> Image.Image | None:
         return None
 
 
-def create_pdf_from_images(images: list[Image.Image], output_path: str) -> None:
+def resize_image_for_telegram(img: Image.Image, max_dimension: int = 4096) -> Image.Image:
+    """Resize image if it exceeds Telegram's limits (max 4096px on any side)."""
+    width, height = img.size
+    
+    if width <= max_dimension and height <= max_dimension:
+        return img
+    
+    # Calculate new size keeping aspect ratio
+    if width > height:
+        new_width = max_dimension
+        new_height = int(height * max_dimension / width)
+    else:
+        new_height = max_dimension
+        new_width = int(width * max_dimension / height)
+    
+    return img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+
+def compress_image_for_volume(img: Image.Image, max_dimension: int = 1800, quality: int = 75) -> Image.Image:
+    """Compress image for volume downloads to reduce file size.
+    
+    Args:
+        img: PIL Image
+        max_dimension: Max width/height (default 1800px - good for reading)
+        quality: Not used directly here, but indicates target quality level
+    """
+    width, height = img.size
+    
+    # Only resize if larger than max_dimension
+    if width > max_dimension or height > max_dimension:
+        if width > height:
+            new_width = max_dimension
+            new_height = int(height * max_dimension / width)
+        else:
+            new_height = max_dimension
+            new_width = int(width * max_dimension / height)
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    return img
+
+
+def create_pdf_from_images(images: list[Image.Image], output_path: str, quality: int = 85) -> None:
     """Create PDF from list of PIL Images."""
     if not images:
         return
-    images[0].save(output_path, save_all=True, append_images=images[1:], format="PDF")
+    # Convert to RGB if needed and save
+    rgb_images = [img.convert("RGB") if img.mode != "RGB" else img for img in images]
+    rgb_images[0].save(output_path, save_all=True, append_images=rgb_images[1:], format="PDF", quality=quality)
 
 
-def create_zip_from_images(images: list[Image.Image], output_path: str) -> None:
-    """Create ZIP archive from list of PIL Images."""
+def create_cbz_from_images(images: list[Image.Image], output_path: str, quality: int = 85) -> None:
+    """Create CBZ (Comic Book ZIP) archive from list of PIL Images."""
     if not images:
         return
     with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for i, img in enumerate(images, 1):
             img_buffer = io.BytesIO()
-            img.save(img_buffer, format="JPEG", quality=95)
+            img.save(img_buffer, format="JPEG", quality=quality)
             img_buffer.seek(0)
             zf.writestr(f"page_{i:03d}.jpg", img_buffer.read())
 
@@ -151,8 +204,8 @@ async def download_chapter_as_pdf(pages: list[dict], chapter_name: str) -> str |
     return pdf_path
 
 
-async def download_chapter_as_zip(pages: list[dict], chapter_name: str) -> str | None:
-    """Download all pages and create ZIP. Returns path to ZIP file."""
+async def download_chapter_as_cbz(pages: list[dict], chapter_name: str) -> str | None:
+    """Download all pages and create CBZ (Comic Book ZIP). Returns path to CBZ file."""
     images: list[Image.Image] = []
     failed_pages = 0
     
@@ -167,20 +220,174 @@ async def download_chapter_as_zip(pages: list[dict], chapter_name: str) -> str |
             failed_pages += 1
     
     if failed_pages > 0:
-        log_error("zip_download", f"Failed to download {failed_pages} pages", f"chapter={chapter_name}")
+        log_error("cbz_download", f"Failed to download {failed_pages} pages", f"chapter={chapter_name}")
     
     if not images:
-        log_error("zip_create", "No images downloaded", f"chapter={chapter_name}")
+        log_error("cbz_create", "No images downloaded", f"chapter={chapter_name}")
         return None
     
     temp_dir = tempfile.gettempdir()
     safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in chapter_name)
-    zip_path = os.path.join(temp_dir, f"{safe_name}.zip")
+    cbz_path = os.path.join(temp_dir, f"{safe_name}.cbz")
     
     try:
-        await run_sync(create_zip_from_images, images, zip_path)
+        await run_sync(create_cbz_from_images, images, cbz_path)
     except Exception as e:
-        log_error("zip_create", str(e), f"chapter={chapter_name}")
+        log_error("cbz_create", str(e), f"chapter={chapter_name}")
         return None
     
-    return zip_path
+    return cbz_path
+
+
+# ============== Volume Download Functions ==============
+
+# Telegram file size limit for bots (50 MB)
+MAX_TELEGRAM_FILE_SIZE = 50 * 1024 * 1024
+
+
+async def download_volume_as_pdf(
+    pages: list[dict], 
+    volume_name: str, 
+    compress: bool = False,
+    max_dimension: int = 1800,
+    quality: int = 75
+) -> str | None:
+    """Download all pages from volume and create PDF. Returns path to PDF file.
+    
+    Args:
+        pages: List of page dicts (with 'img'/'image'/'url' keys) from all chapters in volume
+        volume_name: Name for the volume file
+        compress: If True, compress images to reduce file size
+        max_dimension: Max image dimension when compressing
+        quality: JPEG quality when compressing (1-100)
+    """
+    images: list[Image.Image] = []
+    failed_pages = 0
+    
+    for page in pages:
+        # Handle both dict and string page formats
+        if isinstance(page, dict):
+            url = page.get("img") or page.get("image") or page.get("url")
+        else:
+            url = page
+        
+        if not url:
+            continue
+            
+        img = await run_sync(download_image, url)
+        if img:
+            if compress:
+                img = compress_image_for_volume(img, max_dimension)
+            images.append(img)
+        else:
+            failed_pages += 1
+    
+    if failed_pages > 0:
+        log_error("volume_pdf_download", f"Failed to download {failed_pages} pages", f"volume={volume_name}")
+    
+    if not images:
+        log_error("volume_pdf_create", "No images downloaded", f"volume={volume_name}")
+        return None
+    
+    temp_dir = tempfile.gettempdir()
+    safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in volume_name)
+    pdf_path = os.path.join(temp_dir, f"{safe_name}.pdf")
+    
+    img_quality = quality if compress else 85
+    
+    try:
+        await run_sync(create_pdf_from_images, images, pdf_path, img_quality)
+    except Exception as e:
+        log_error("volume_pdf_create", str(e), f"volume={volume_name}")
+        return None
+    
+    return pdf_path
+
+
+def create_cbz_with_chapters(
+    pages_with_info: list[dict], 
+    output_path: str, 
+    quality: int = 85,
+    compress: bool = False,
+    max_dimension: int = 1800
+) -> None:
+    """Create CBZ archive with chapter organization.
+    
+    Args:
+        pages_with_info: List of dicts with 'url' and 'chapter' keys
+        output_path: Path for output CBZ file
+        quality: JPEG quality (1-100)
+        compress: If True, resize large images
+        max_dimension: Max image dimension when compressing
+    """
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        page_count_per_chapter = {}
+        
+        for page_info in pages_with_info:
+            url = page_info.get("url")
+            chapter = page_info.get("chapter", "unknown")
+            
+            if not url:
+                continue
+                
+            img = download_image(url)
+            if not img:
+                continue
+            
+            # Compress if needed
+            if compress:
+                img = compress_image_for_volume(img, max_dimension)
+            
+            # Track page number per chapter
+            if chapter not in page_count_per_chapter:
+                page_count_per_chapter[chapter] = 0
+            page_count_per_chapter[chapter] += 1
+            page_num = page_count_per_chapter[chapter]
+            
+            # Create safe chapter name for folder
+            safe_chapter = "".join(c if c.isalnum() or c in "._- " else "_" for c in str(chapter))
+            
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format="JPEG", quality=quality)
+            img_buffer.seek(0)
+            zf.writestr(f"{safe_chapter}/page_{page_num:03d}.jpg", img_buffer.read())
+
+
+async def download_volume_as_cbz(
+    pages_with_info: list[dict], 
+    volume_name: str,
+    compress: bool = False,
+    max_dimension: int = 1800,
+    quality: int = 75
+) -> str | None:
+    """Download all pages from volume and create CBZ with chapter folders.
+    
+    Args:
+        pages_with_info: List of dicts with 'url' and 'chapter' keys
+        volume_name: Name for the volume file
+        compress: If True, compress images to reduce file size
+        max_dimension: Max image dimension when compressing
+        quality: JPEG quality when compressing (1-100)
+    """
+    if not pages_with_info:
+        log_error("volume_cbz_create", "No pages provided", f"volume={volume_name}")
+        return None
+    
+    temp_dir = tempfile.gettempdir()
+    safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in volume_name)
+    cbz_path = os.path.join(temp_dir, f"{safe_name}.cbz")
+    
+    img_quality = quality if compress else 85
+    
+    try:
+        await run_sync(create_cbz_with_chapters, pages_with_info, cbz_path, img_quality, compress, max_dimension)
+    except Exception as e:
+        log_error("volume_cbz_create", str(e), f"volume={volume_name}")
+        return None
+    
+    # Check if file was created and has content
+    if not os.path.exists(cbz_path) or os.path.getsize(cbz_path) == 0:
+        log_error("volume_cbz_create", "Empty CBZ file", f"volume={volume_name}")
+        return None
+    
+    return cbz_path

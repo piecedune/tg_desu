@@ -120,6 +120,9 @@ def build_chapter_keyboard(
     # Add "Go to chapter" button if there are many chapters
     if len(chapters) > per_page:
         rows.append([InlineKeyboardButton(text="🔢 Ввести номер главы", callback_data=f"goto_ch:{manga_id}")])
+    
+    # Add "Download volume" button
+    rows.append([InlineKeyboardButton(text="📚 Скачать том", callback_data=f"volumes:{manga_id}")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -148,14 +151,46 @@ def build_manga_buttons(manga_id: int, is_favorite: bool, bot_username: str | No
 def build_format_keyboard(manga_id: int, chapter_id: int, default_format: str = "pdf") -> InlineKeyboardMarkup:
     """Build download format choice keyboard with album reading option."""
     pdf_mark = " ⭐" if default_format == "pdf" else ""
-    zip_mark = " ⭐" if default_format == "zip" else ""
+    cbz_mark = " ⭐" if default_format == "cbz" else ""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👁 Читать здесь", callback_data=f"read_album:{manga_id}:{chapter_id}")],
         [
             InlineKeyboardButton(text=f"📕 PDF{pdf_mark}", callback_data=f"dl_pdf:{manga_id}:{chapter_id}"),
-            InlineKeyboardButton(text=f"🗂 ZIP{zip_mark}", callback_data=f"dl_zip:{manga_id}:{chapter_id}"),
+            InlineKeyboardButton(text=f"📦 CBZ{cbz_mark}", callback_data=f"dl_zip:{manga_id}:{chapter_id}"),
         ],
         [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+    ])
+
+
+def build_volume_list_keyboard(volumes: list[str | int], manga_id: int) -> InlineKeyboardMarkup:
+    """Build keyboard with volume buttons for download."""
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    
+    for vol in volumes:
+        vol_str = str(vol) if vol else "?"
+        row.append(InlineKeyboardButton(
+            text=f"Том {vol_str}", 
+            callback_data=f"vol_format:{manga_id}:{vol_str}"
+        ))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    
+    rows.append([InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_volume_format_keyboard(manga_id: int, volume: str) -> InlineKeyboardMarkup:
+    """Build format choice keyboard for volume download."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📕 PDF", callback_data=f"dl_vol_pdf:{manga_id}:{volume}"),
+            InlineKeyboardButton(text="📦 CBZ", callback_data=f"dl_vol_cbz:{manga_id}:{volume}"),
+        ],
+        [InlineKeyboardButton(text="◀ Назад", callback_data=f"volumes:{manga_id}")]
     ])
 
 

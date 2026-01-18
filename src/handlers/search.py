@@ -10,7 +10,7 @@ from config import GENRES
 from keyboards import build_genre_keyboard, build_search_results
 from states import SearchStates
 from dependencies import get_client
-from utils import run_sync
+from utils import run_sync, safe_callback_answer
 
 router = Router()
 
@@ -51,7 +51,7 @@ async def cmd_popular(message: Message) -> None:
 @router.callback_query(F.data == "search:keywords")
 async def prompt_keywords(callback: CallbackQuery, state: FSMContext) -> None:
     """Prompt user to enter keywords."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     await state.set_state(SearchStates.keywords)
     if callback.message:
         try:
@@ -63,7 +63,7 @@ async def prompt_keywords(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "search:genres")
 async def prompt_genres(callback: CallbackQuery, state: FSMContext) -> None:
     """Show genre selection keyboard."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if callback.message:
         try:
             await callback.message.edit_text(
@@ -80,7 +80,7 @@ async def prompt_genres(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("genres_page:"))
 async def show_genres_page(callback: CallbackQuery) -> None:
     """Handle genre pagination."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     page = int(callback.data.split(":")[1])
@@ -96,7 +96,7 @@ async def show_genres_page(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("genre:"))
 async def search_by_genre(callback: CallbackQuery) -> None:
     """Search manga by selected genre."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     api_genre = callback.data.split(":", 1)[1]
@@ -116,7 +116,7 @@ async def search_by_genre(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.in_({"search:new", "search:popular"}))
 async def run_quick_search(callback: CallbackQuery) -> None:
     """Handle new/popular quick search."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     client = get_client()
     popularity = callback.data == "search:popular"
     is_new = callback.data == "search:new"
@@ -149,7 +149,7 @@ async def search_keywords(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("results:"))
 async def paginate_results(callback: CallbackQuery) -> None:
     """Handle search results pagination."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     
@@ -188,7 +188,7 @@ async def paginate_results(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "noop")
 async def noop_callback(callback: CallbackQuery) -> None:
     """Handle noop callback (page info button)."""
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 async def _send_search_results(target: Message, results: list, search_type: str = "search", query: str = "") -> None:

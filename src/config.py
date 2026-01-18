@@ -10,7 +10,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 # Desu API base URL
-DESU_BASE_URL = os.getenv("DESU_BASE_URL", "https://desu.uno")
+DESU_BASE_URL = os.getenv("DESU_BASE_URL", "https://x.desu.city")
 
 # Admin Telegram ID
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) or None

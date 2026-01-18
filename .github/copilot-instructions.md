@@ -49,8 +49,14 @@ Inline кнопки используют формат через двоеточ�
 - `chapter:{manga_id}:{chapter_id}` — выбор формата
 - `read_album:{manga_id}:{chapter_id}` — читать как альбом
 - `dl_pdf:{manga_id}:{chapter_id}` — скачать PDF
-- `dl_zip:{manga_id}:{chapter_id}` — скачать ZIP
+- `dl_zip:{manga_id}:{chapter_id}` — скачать CBZ
 - `fav:add|remove:{manga_id}` — добавить/убрать из избранного
+
+**Тома:**
+- `volumes:{manga_id}` — список томов для скачивания
+- `vol_format:{manga_id}:{vol}` — выбор формата тома
+- `dl_vol_pdf:{manga_id}:{vol}` — скачать том как PDF
+- `dl_vol_cbz:{manga_id}:{vol}` — скачать том как CBZ
 
 **Поиск:**
 - `search:new|popular|keywords|genres` — типы поиска
@@ -191,7 +197,9 @@ build_catalog_menu()                   # Новинки, Популярное
 build_genre_keyboard(page)             # Пагинация жанров
 build_chapter_keyboard(chapters, ..., read_chapter_ids)  # Главы с ✅ для прочитанных
 build_manga_buttons(manga_id, is_favorite, bot_username)  # Главы + Избранное + Поделиться
-build_format_keyboard(manga_id, chapter_id)  # Читать здесь / PDF / ZIP
+build_format_keyboard(manga_id, chapter_id)  # Читать здесь / PDF / CBZ
+build_volume_list_keyboard(volumes, manga_id)  # Список томов для скачивания
+build_volume_format_keyboard(manga_id, volume)  # PDF / CBZ для тома
 build_search_results(results, page, search_type, search_query)  # С пагинацией
 build_profile_menu()                   # Избранное, История, Настройки
 build_settings_keyboard(format, notifications)  # Настройки пользователя
@@ -210,11 +218,16 @@ format_manga_detail(detail, max=1000) -> str
 # Скачивание (с Referer header)
 download_image(url) -> Image | None
 
-# Создание файлов
+# Создание файлов (главы)
 create_pdf_from_images(images, output_path)
-create_zip_from_images(images, output_path)
+create_cbz_from_images(images, output_path)
 await download_chapter_as_pdf(pages, chapter_name) -> str | None
-await download_chapter_as_zip(pages, chapter_name) -> str | None
+await download_chapter_as_cbz(pages, chapter_name) -> str | None
+
+# Создание файлов (тома)
+await download_volume_as_pdf(pages, volume_name) -> str | None
+await download_volume_as_cbz(pages_with_info, volume_name) -> str | None
+create_cbz_with_chapters(pages_with_info, output_path)  # CBZ с папками по главам
 ```
 
 ## Middlewares (middlewares.py)
@@ -317,3 +330,4 @@ except Exception:
 - Жанры в ответе — строки через запятую
 - Изображения требуют `Referer: https://desu.uno/`
 - Максимальный manga_id для random: ~6965
+- Главы содержат поле `vol` для номера тома

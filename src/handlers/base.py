@@ -23,7 +23,7 @@ from keyboards import (
     build_manga_buttons,
 )
 from dependencies import get_favorites, get_client
-from utils import run_sync, format_manga_detail
+from utils import run_sync, format_manga_detail, safe_callback_answer
 
 router = Router()
 
@@ -49,7 +49,7 @@ WELCOME_GUIDE = """
 1. Найди мангу через поиск или каталог
 2. Нажми на неё, чтобы увидеть описание
 3. Выбери главу из списка
-4. Читай прямо в чате или скачай PDF/ZIP
+4. Читай прямо в чате или скачай PDF/CBZ
 
 <b>⭐ Избранное:</b>
 Добавляй мангу в избранное — бот пришлёт уведомление о новых главах!
@@ -186,7 +186,7 @@ async def profile_main(callback: CallbackQuery) -> None:
     
     text = _build_profile_text(callback.from_user, stats, download_format)
     await callback.message.edit_text(text, reply_markup=build_profile_menu(), parse_mode="HTML")
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "profile:favorites")
@@ -204,7 +204,7 @@ async def profile_favorites(callback: CallbackQuery) -> None:
             ]),
             parse_mode="HTML"
         )
-        await callback.answer()
+        await safe_callback_answer(callback)
         return
     
     favorites = [{"manga_id": m_id, "title": title, "cover": cover} for m_id, title, cover in favorites_raw]
@@ -214,7 +214,7 @@ async def profile_favorites(callback: CallbackQuery) -> None:
         reply_markup=build_favorites_keyboard(favorites, page=1),
         parse_mode="HTML"
     )
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data.startswith("fav_page:"))
@@ -232,7 +232,7 @@ async def favorites_page(callback: CallbackQuery) -> None:
         reply_markup=build_favorites_keyboard(favorites, page=page),
         parse_mode="HTML"
     )
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "profile:history")
@@ -250,7 +250,7 @@ async def profile_history(callback: CallbackQuery) -> None:
             ]),
             parse_mode="HTML"
         )
-        await callback.answer()
+        await safe_callback_answer(callback)
         return
     
     text = f"📖 <b>История просмотров</b> (последние {len(history)})"
@@ -259,7 +259,7 @@ async def profile_history(callback: CallbackQuery) -> None:
         reply_markup=build_history_keyboard(history, page=1),
         parse_mode="HTML"
     )
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data.startswith("history_page:"))
@@ -276,7 +276,7 @@ async def history_page(callback: CallbackQuery) -> None:
         reply_markup=build_history_keyboard(history, page=page),
         parse_mode="HTML"
     )
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "profile:settings")
@@ -296,7 +296,7 @@ async def profile_settings(callback: CallbackQuery) -> None:
         reply_markup=build_settings_keyboard(current_format),
         parse_mode="HTML"
     )
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data.startswith("set_format:"))

@@ -137,6 +137,20 @@ class FavoritesStore:
                 )
                 """
             )
+            # Volume cache - store file_ids for downloaded volumes
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS volume_cache (
+                    manga_id INTEGER NOT NULL,
+                    volume TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    file_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (manga_id, volume, format)
+                )
+                """
+            )
             # Indexes for faster queries
             conn.execute("CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user ON reading_history(user_id)")
@@ -145,6 +159,7 @@ class FavoritesStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_manga_history_user ON manga_history(user_id, viewed_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_error_log_time ON error_log(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_album_cache ON album_cache(manga_id, chapter_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_volume_cache ON volume_cache(manga_id, volume)")
             conn.commit()
 
     # ========== User Methods ==========
@@ -428,6 +443,41 @@ class FavoritesStore:
             conn.commit()
             return cursor.rowcount
 
+    # ========== Volume Cache Methods ==========
+
+    def get_cached_volume(self, manga_id: int, volume: str, format: str) -> str | None:
+        """Get cached Telegram file_id for a volume if exists."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT file_id FROM volume_cache WHERE manga_id = ? AND volume = ? AND format = ?",
+                (manga_id, volume, format),
+            ).fetchone()
+        return row[0] if row else None
+
+    def cache_volume(
+        self, manga_id: int, volume: str, format: str, file_id: str, file_name: str | None = None
+    ) -> None:
+        """Cache a Telegram file_id for a volume."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO volume_cache (manga_id, volume, format, file_id, file_name, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (manga_id, volume, format, file_id, file_name),
+            )
+            conn.commit()
+
+    def clear_volume_cache(self, manga_id: int | None = None) -> int:
+        """Clear volume cache. If manga_id provided, clear only for that manga."""
+        with self._connect() as conn:
+            if manga_id:
+                cursor = conn.execute("DELETE FROM volume_cache WHERE manga_id = ?", (manga_id,))
+            else:
+                cursor = conn.execute("DELETE FROM volume_cache")
+            conn.commit()
+            return cursor.rowcount
+
     # ========== Album Cache Methods ==========
 
     def get_cached_album(self, manga_id: int, chapter_id: int) -> list[list[str]] | None:
@@ -462,6 +512,16 @@ class FavoritesStore:
                 cursor = conn.execute("DELETE FROM album_cache WHERE manga_id = ?", (manga_id,))
             else:
                 cursor = conn.execute("DELETE FROM album_cache")
+            conn.commit()
+            return cursor.rowcount
+
+    def clear_album_cache_for_chapter(self, manga_id: int, chapter_id: int) -> int:
+        """Clear album cache for a specific chapter."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM album_cache WHERE manga_id = ? AND chapter_id = ?",
+                (manga_id, chapter_id),
+            )
             conn.commit()
             return cursor.rowcount
 

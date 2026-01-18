@@ -14,6 +14,7 @@ from config import is_admin
 from keyboards import MAIN_MENU
 from states import BroadcastStates
 from dependencies import get_favorites
+from utils import safe_callback_answer
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ async def handle_broadcast_content(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "broadcast:confirm")
 async def confirm_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
     """Confirm and send broadcast."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     
     if not is_admin(callback.from_user.id):
         await state.clear()

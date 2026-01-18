@@ -16,7 +16,8 @@ from utils import (
     chapter_title,
     format_manga_detail,
     download_chapter_as_pdf,
-    download_chapter_as_zip,
+    download_chapter_as_cbz,
+    safe_callback_answer,
 )
 
 router = Router()
@@ -25,7 +26,7 @@ router = Router()
 @router.callback_query(F.data.startswith("manga:"))
 async def show_manga(callback: CallbackQuery) -> None:
     """Show manga details."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     manga_id = int(callback.data.split(":")[1])
@@ -64,7 +65,7 @@ async def show_manga(callback: CallbackQuery) -> None:
 async def handle_favorite(callback: CallbackQuery) -> None:
     """Add/remove manga from favorites."""
     if not callback.message:
-        await callback.answer()
+        await safe_callback_answer(callback)
         return
     action, manga_id_text = callback.data.split(":")[1:]
     manga_id = int(manga_id_text)
@@ -92,7 +93,7 @@ async def handle_favorite(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("chapters:"))
 async def show_chapters(callback: CallbackQuery) -> None:
     """Show chapter list with read chapters marked."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     _, manga_id_text, page_text = callback.data.split(":")
@@ -121,7 +122,7 @@ async def show_chapters(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("goto_ch:"))
 async def prompt_chapter_number(callback: CallbackQuery, state: FSMContext) -> None:
     """Prompt user to enter chapter number."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     manga_id = int(callback.data.split(":")[1])
@@ -205,7 +206,7 @@ async def handle_chapter_number_input(message: Message, state: FSMContext) -> No
 @router.callback_query(F.data.startswith("chapter:"))
 async def show_chapter_options(callback: CallbackQuery) -> None:
     """Show format choice for chapter download or use default format."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     _, manga_id_text, chapter_id_text = callback.data.split(":")
@@ -236,7 +237,7 @@ async def show_chapter_options(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("dl_pdf:"))
 async def download_pdf(callback: CallbackQuery) -> None:
     """Download chapter as PDF."""
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     _, manga_id_text, chapter_id_text = callback.data.split(":")
@@ -306,8 +307,8 @@ async def download_pdf(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("dl_zip:"))
 async def download_zip(callback: CallbackQuery) -> None:
-    """Download chapter as ZIP."""
-    await callback.answer()
+    """Download chapter as CBZ (Comic Book ZIP)."""
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     _, manga_id_text, chapter_id_text = callback.data.split(":")
@@ -323,56 +324,56 @@ async def download_zip(callback: CallbackQuery) -> None:
     
     detail = await run_sync(client.get_manga_detail, manga_id)
     manga_title = detail.title if detail else "Manga"
-    file_name = f"{manga_title} - {ch_name}.zip"
+    file_name = f"{manga_title} - {ch_name}.cbz"
     
     # Check cache
-    cached_file_id = store.get_cached_file(manga_id, chapter_id, "zip")
+    cached_file_id = store.get_cached_file(manga_id, chapter_id, "cbz")
     if cached_file_id:
         try:
             await callback.message.delete()
         except Exception:
             pass
-        await callback.message.answer_document(cached_file_id, caption=f"🗂 {manga_title} - {ch_name}")
+        await callback.message.answer_document(cached_file_id, caption=f"📦 {manga_title} - {ch_name}")
         store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
         return
     
     try:
-        await callback.message.edit_text(f"⏳ Downloading {ch_name} as ZIP... Please wait.")
+        await callback.message.edit_text(f"⏳ Скачиваю {ch_name} как CBZ...")
     except Exception:
         pass
     
     pages = await run_sync(client.get_chapter_pages, manga_id, chapter_id)
     if not pages:
         try:
-            await callback.message.edit_text("No pages found for this chapter.")
+            await callback.message.edit_text("Страницы не найдены.")
         except Exception:
             pass
         return
     
-    zip_path = await download_chapter_as_zip(pages, f"{manga_title} - {ch_name}")
+    cbz_path = await download_chapter_as_cbz(pages, f"{manga_title} - {ch_name}")
     
-    if not zip_path or not os.path.exists(zip_path):
+    if not cbz_path or not os.path.exists(cbz_path):
         try:
-            await callback.message.edit_text("❌ Failed to create ZIP.")
+            await callback.message.edit_text("❌ Не удалось создать CBZ.")
         except Exception:
             pass
         return
     
     try:
-        zip_file = FSInputFile(zip_path, filename=file_name)
+        cbz_file = FSInputFile(cbz_path, filename=file_name)
         try:
             await callback.message.delete()
         except Exception:
             pass
-        sent_msg = await callback.message.answer_document(zip_file, caption=f"🗂 {manga_title} - {ch_name}")
+        sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - {ch_name}")
         
         if sent_msg.document:
-            store.cache_file(manga_id, chapter_id, "zip", sent_msg.document.file_id, file_name)
+            store.cache_file(manga_id, chapter_id, "cbz", sent_msg.document.file_id, file_name)
         
         store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
     finally:
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
+        if os.path.exists(cbz_path):
+            os.remove(cbz_path)
 
 
 @router.callback_query(F.data.startswith("read_album:"))
@@ -380,7 +381,7 @@ async def read_album(callback: CallbackQuery) -> None:
     """Read chapter as album (media group) - sends images directly to chat."""
     from aiogram.types import InputMediaPhoto
     
-    await callback.answer()
+    await safe_callback_answer(callback)
     if not callback.message:
         return
     _, manga_id_text, chapter_id_text = callback.data.split(":")
@@ -467,34 +468,59 @@ async def read_album(callback: CallbackQuery) -> None:
     from aiogram.types import BufferedInputFile
     import io
     
+    all_batches_success = True  # Track if all batches sent successfully
+    
     for batch_index, i in enumerate(range(0, len(page_urls), 10)):
         batch_urls = page_urls[i:i + 10]
         media_group = []
+        download_failed = False
         
         for url in batch_urls:
             try:
                 img = await run_sync(download_image, url)
                 if img:
+                    # Resize if too large for Telegram (max 4096px)
+                    from utils import resize_image_for_telegram
+                    img = resize_image_for_telegram(img)
+                    
                     img_buffer = io.BytesIO()
                     img.save(img_buffer, format="JPEG", quality=85)
                     img_buffer.seek(0)
                     media_group.append(InputMediaPhoto(
                         media=BufferedInputFile(img_buffer.read(), filename="page.jpg")
                     ))
+                else:
+                    download_failed = True
             except Exception as e:
                 store.log_error("album_download", str(e), f"url={url[:50]}")
+                download_failed = True
                 continue
         
+        # Only send and cache if we have images AND all downloaded successfully
         if media_group:
             try:
                 sent_messages = await callback.message.answer_media_group(media_group)
-                # Cache file_ids for future use
-                file_ids = [msg.photo[-1].file_id for msg in sent_messages if msg.photo]
-                if file_ids:
-                    store.cache_album_batch(manga_id, chapter_id, batch_index, file_ids)
+                # Only cache if ALL images in batch downloaded and sent successfully
+                if not download_failed and len(sent_messages) == len(batch_urls):
+                    file_ids = [msg.photo[-1].file_id for msg in sent_messages if msg.photo]
+                    if len(file_ids) == len(batch_urls):
+                        store.cache_album_batch(manga_id, chapter_id, batch_index, file_ids)
+                    else:
+                        all_batches_success = False
+                else:
+                    all_batches_success = False
             except Exception as e:
                 store.log_error("album_send", str(e), f"batch={i}-{i+len(batch_urls)}")
                 await callback.message.answer(f"⚠️ Ошибка при отправке страниц {i+1}-{i+len(batch_urls)}")
+                all_batches_success = False
+        else:
+            # No images in batch - all downloads failed
+            await callback.message.answer(f"⚠️ Ошибка при отправке страниц {i+1}-{i+len(batch_urls)}")
+            all_batches_success = False
+    
+    # If any batch failed, clear partial cache to force re-download next time
+    if not all_batches_success:
+        store.clear_album_cache_for_chapter(manga_id, chapter_id)
     
     # Mark as read
     store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
@@ -504,3 +530,437 @@ async def read_album(callback: CallbackQuery) -> None:
         [InlineKeyboardButton(text="📖 К списку глав", callback_data=f"chapters:{manga_id}:1")]
     ])
     await callback.message.answer("✅ Глава загружена", reply_markup=nav_keyboard)
+
+
+# ============== Volume Download Handlers ==============
+
+@router.callback_query(F.data.startswith("volumes:"))
+async def show_volumes(callback: CallbackQuery) -> None:
+    """Show list of volumes available for download."""
+    from keyboards import build_volume_list_keyboard
+    
+    await safe_callback_answer(callback)
+    if not callback.message:
+        return
+    manga_id = int(callback.data.split(":")[1])
+    
+    client = get_client()
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    
+    if not chapters:
+        try:
+            await callback.message.edit_text("Нет доступных глав.")
+        except Exception:
+            pass
+        return
+    
+    # Extract unique volumes
+    volumes_set = set()
+    for ch in chapters:
+        vol = ch.get("vol")
+        if vol is not None:
+            volumes_set.add(vol)
+    
+    if not volumes_set:
+        try:
+            await callback.message.edit_text(
+                "❌ Тома не найдены. Возможно, главы не разбиты по томам.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                ])
+            )
+        except Exception:
+            pass
+        return
+    
+    # Sort volumes
+    try:
+        volumes = sorted(volumes_set, key=lambda x: float(x) if x else 0)
+    except (ValueError, TypeError):
+        volumes = sorted(volumes_set, key=str)
+    
+    keyboard = build_volume_list_keyboard(volumes, manga_id)
+    try:
+        await callback.message.edit_text("📚 Выберите том для скачивания:", reply_markup=keyboard)
+    except Exception:
+        await callback.message.answer("📚 Выберите том для скачивания:", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("vol_format:"))
+async def show_volume_format(callback: CallbackQuery) -> None:
+    """Show format selection for volume download."""
+    from keyboards import build_volume_format_keyboard
+    
+    await safe_callback_answer(callback)
+    if not callback.message:
+        return
+    _, manga_id_text, volume = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    
+    client = get_client()
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    
+    # Count chapters in this volume
+    vol_chapters = [ch for ch in chapters if str(ch.get("vol")) == volume]
+    chapter_count = len(vol_chapters)
+    
+    keyboard = build_volume_format_keyboard(manga_id, volume)
+    try:
+        await callback.message.edit_text(
+            f"📚 Том {volume}\n"
+            f"📖 Глав: {chapter_count}\n\n"
+            "Выберите формат:",
+            reply_markup=keyboard
+        )
+    except Exception:
+        await callback.message.answer(
+            f"📚 Том {volume}\n📖 Глав: {chapter_count}\n\nВыберите формат:",
+            reply_markup=keyboard
+        )
+
+
+@router.callback_query(F.data.startswith("dl_vol_pdf:"))
+async def download_volume_pdf(callback: CallbackQuery) -> None:
+    """Download entire volume as PDF."""
+    from utils import download_volume_as_pdf
+    
+    await safe_callback_answer(callback)
+    if not callback.message:
+        return
+    _, manga_id_text, volume = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    
+    client = get_client()
+    store = get_favorites()
+    
+    detail = await run_sync(client.get_manga_detail, manga_id)
+    manga_title = detail.title if detail else "Manga"
+    
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    vol_chapters = [ch for ch in chapters if str(ch.get("vol")) == volume]
+    
+    if not vol_chapters:
+        try:
+            await callback.message.edit_text("❌ Главы тома не найдены.")
+        except Exception:
+            pass
+        return
+    
+    # Sort by chapter number
+    try:
+        vol_chapters.sort(key=lambda x: float(x.get("ch") or 0))
+    except (ValueError, TypeError):
+        pass
+    
+    file_name = f"{manga_title} - Том {volume}.pdf"
+    
+    # Check cache first
+    cached_file_id = store.get_cached_volume(manga_id, volume, "pdf")
+    if cached_file_id:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer_document(cached_file_id, caption=f"📕 {manga_title} - Том {volume}")
+        # Mark all chapters in volume as read
+        for ch in vol_chapters:
+            ch_id = ch.get("id")
+            ch_name = chapter_title(ch)
+            store.mark_chapter_read(callback.from_user.id, manga_id, ch_id, ch_name)
+        return
+    
+    try:
+        await callback.message.edit_text(
+            f"⏳ Скачиваю том {volume} ({len(vol_chapters)} глав) как PDF...\n"
+            "Это может занять некоторое время."
+        )
+    except Exception:
+        pass
+    
+    # Collect all pages from all chapters
+    all_pages = []
+    for ch in vol_chapters:
+        chapter_id = ch.get("id")
+        pages = await run_sync(client.get_chapter_pages, manga_id, chapter_id)
+        if pages:
+            all_pages.extend(pages)
+    
+    if not all_pages:
+        try:
+            await callback.message.edit_text("❌ Страницы не найдены.")
+        except Exception:
+            pass
+        return
+    
+    # First try without compression
+    pdf_path = await download_volume_as_pdf(all_pages, f"{manga_title} - Том {volume}")
+    
+    if not pdf_path or not os.path.exists(pdf_path):
+        try:
+            await callback.message.edit_text("❌ Не удалось создать PDF.")
+        except Exception:
+            pass
+        return
+    
+    # Check file size (Telegram limit: 50MB for bots)
+    file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+    
+    # If too large, try with compression
+    if file_size_mb > 50:
+        os.remove(pdf_path)
+        try:
+            await callback.message.edit_text(
+                f"⏳ Том слишком большой ({file_size_mb:.1f} MB).\n"
+                "Сжимаю изображения..."
+            )
+        except Exception:
+            pass
+        
+        # Retry with compression
+        pdf_path = await download_volume_as_pdf(
+            all_pages, 
+            f"{manga_title} - Том {volume}", 
+            compress=True,
+            max_dimension=1600,
+            quality=70
+        )
+        
+        if not pdf_path or not os.path.exists(pdf_path):
+            try:
+                await callback.message.edit_text("❌ Не удалось создать сжатый PDF.")
+            except Exception:
+                pass
+            return
+        
+        file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+        
+        # If still too large after compression
+        if file_size_mb > 50:
+            os.remove(pdf_path)
+            try:
+                await callback.message.edit_text(
+                    f"❌ Том слишком большой даже после сжатия ({file_size_mb:.1f} MB).\n"
+                    "Лимит Telegram: 50 MB.\n\n"
+                    "💡 Скачайте главы по отдельности.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                    ])
+                )
+            except Exception:
+                pass
+            return
+        
+        # Mark as compressed in filename
+        file_name = f"{manga_title} - Том {volume} (сжатый).pdf"
+    
+    try:
+        pdf_file = FSInputFile(pdf_path, filename=file_name)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - Том {volume}")
+        
+        # Cache file_id
+        if sent_msg.document:
+            store.cache_volume(manga_id, volume, "pdf", sent_msg.document.file_id, file_name)
+        
+        # Mark all chapters in volume as read
+        for ch in vol_chapters:
+            ch_id = ch.get("id")
+            ch_name = chapter_title(ch)
+            store.mark_chapter_read(callback.from_user.id, manga_id, ch_id, ch_name)
+    except Exception as e:
+        if "Too Large" in str(e) or "EntityTooLarge" in str(type(e).__name__):
+            try:
+                await callback.message.edit_text(
+                    f"❌ Том слишком большой для Telegram.\n"
+                    "Лимит: 50 MB.\n\n"
+                    "💡 Скачайте главы по отдельности.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                    ])
+                )
+            except Exception:
+                pass
+        else:
+            raise
+    finally:
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+
+
+@router.callback_query(F.data.startswith("dl_vol_cbz:"))
+async def download_volume_cbz(callback: CallbackQuery) -> None:
+    """Download entire volume as CBZ."""
+    from utils import download_volume_as_cbz
+    
+    await safe_callback_answer(callback)
+    if not callback.message:
+        return
+    _, manga_id_text, volume = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    
+    client = get_client()
+    store = get_favorites()
+    
+    detail = await run_sync(client.get_manga_detail, manga_id)
+    manga_title = detail.title if detail else "Manga"
+    
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    vol_chapters = [ch for ch in chapters if str(ch.get("vol")) == volume]
+    
+    if not vol_chapters:
+        try:
+            await callback.message.edit_text("❌ Главы тома не найдены.")
+        except Exception:
+            pass
+        return
+    
+    # Sort by chapter number
+    try:
+        vol_chapters.sort(key=lambda x: float(x.get("ch") or 0))
+    except (ValueError, TypeError):
+        pass
+    
+    file_name = f"{manga_title} - Том {volume}.cbz"
+    
+    # Check cache first
+    cached_file_id = store.get_cached_volume(manga_id, volume, "cbz")
+    if cached_file_id:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer_document(cached_file_id, caption=f"📦 {manga_title} - Том {volume}")
+        # Mark all chapters in volume as read
+        for ch in vol_chapters:
+            ch_id = ch.get("id")
+            ch_name = chapter_title(ch)
+            store.mark_chapter_read(callback.from_user.id, manga_id, ch_id, ch_name)
+        return
+    
+    try:
+        await callback.message.edit_text(
+            f"⏳ Скачиваю том {volume} ({len(vol_chapters)} глав) как CBZ...\n"
+            "Это может занять некоторое время."
+        )
+    except Exception:
+        pass
+    
+    # Collect all pages from all chapters with chapter info
+    pages_with_info = []
+    for ch in vol_chapters:
+        chapter_id = ch.get("id")
+        ch_name = chapter_title(ch)
+        pages = await run_sync(client.get_chapter_pages, manga_id, chapter_id)
+        if pages:
+            for page in pages:
+                # Extract URL from page dict
+                url = page.get("img") or page.get("image") or page.get("url")
+                if url:
+                    pages_with_info.append({"url": url, "chapter": ch_name})
+    
+    if not pages_with_info:
+        try:
+            await callback.message.edit_text("❌ Страницы не найдены.")
+        except Exception:
+            pass
+        return
+    
+    # First try without compression
+    cbz_path = await download_volume_as_cbz(pages_with_info, f"{manga_title} - Том {volume}")
+    
+    if not cbz_path or not os.path.exists(cbz_path):
+        try:
+            await callback.message.edit_text("❌ Не удалось создать CBZ.")
+        except Exception:
+            pass
+        return
+    
+    # Check file size (Telegram limit: 50MB for bots)
+    file_size_mb = os.path.getsize(cbz_path) / (1024 * 1024)
+    
+    # If too large, try with compression
+    if file_size_mb > 50:
+        os.remove(cbz_path)
+        try:
+            await callback.message.edit_text(
+                f"⏳ Том слишком большой ({file_size_mb:.1f} MB).\n"
+                "Сжимаю изображения..."
+            )
+        except Exception:
+            pass
+        
+        # Retry with compression
+        cbz_path = await download_volume_as_cbz(
+            pages_with_info, 
+            f"{manga_title} - Том {volume}",
+            compress=True,
+            max_dimension=1600,
+            quality=70
+        )
+        
+        if not cbz_path or not os.path.exists(cbz_path):
+            try:
+                await callback.message.edit_text("❌ Не удалось создать сжатый CBZ.")
+            except Exception:
+                pass
+            return
+        
+        file_size_mb = os.path.getsize(cbz_path) / (1024 * 1024)
+        
+        # If still too large after compression
+        if file_size_mb > 50:
+            os.remove(cbz_path)
+            try:
+                await callback.message.edit_text(
+                    f"❌ Том слишком большой даже после сжатия ({file_size_mb:.1f} MB).\n"
+                    "Лимит Telegram: 50 MB.\n\n"
+                    "💡 Скачайте главы по отдельности.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                    ])
+                )
+            except Exception:
+                pass
+            return
+        
+        # Mark as compressed in filename
+        file_name = f"{manga_title} - Том {volume} (сжатый).cbz"
+    
+    try:
+        cbz_file = FSInputFile(cbz_path, filename=file_name)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - Том {volume}")
+        
+        # Cache file_id
+        if sent_msg.document:
+            store.cache_volume(manga_id, volume, "cbz", sent_msg.document.file_id, file_name)
+        
+        # Mark all chapters in volume as read
+        for ch in vol_chapters:
+            ch_id = ch.get("id")
+            ch_name = chapter_title(ch)
+            store.mark_chapter_read(callback.from_user.id, manga_id, ch_id, ch_name)
+    except Exception as e:
+        if "Too Large" in str(e) or "EntityTooLarge" in str(type(e).__name__):
+            try:
+                await callback.message.edit_text(
+                    f"❌ Том слишком большой для Telegram.\n"
+                    "Лимит: 50 MB.\n\n"
+                    "💡 Скачайте главы по отдельности.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                    ])
+                )
+            except Exception:
+                pass
+        else:
+            raise
+    finally:
+        if os.path.exists(cbz_path):
+            os.remove(cbz_path)
