@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import time
+import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -21,6 +23,30 @@ from utils import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
+
+
+def create_progress_callback(message):
+    """Create a progress callback that edits the message with progress.
+    
+    Args:
+        message: aiogram Message object to edit
+    """
+    last_update_time = [0.0]  # Use list to allow mutation in closure
+    
+    async def progress_callback(current: int, total: int, text: str) -> None:
+        # Throttle updates to max once per 2 seconds
+        now = time.time()
+        if now - last_update_time[0] < 2.0 and current < total:
+            return
+        last_update_time[0] = now
+        
+        try:
+            await message.edit_text(text)
+        except Exception:
+            pass  # Ignore if message can't be edited (deleted, etc)
+    
+    return progress_callback
 
 
 @router.callback_query(F.data.startswith("manga:"))
@@ -279,7 +305,9 @@ async def download_pdf(callback: CallbackQuery) -> None:
             pass
         return
     
-    pdf_path = await download_chapter_as_pdf(pages, f"{manga_title} - {ch_name}")
+    # Create progress callback
+    progress_cb = create_progress_callback(callback.message)
+    pdf_path = await download_chapter_as_pdf(pages, f"{manga_title} - {ch_name}", progress_callback=progress_cb)
     
     if not pdf_path or not os.path.exists(pdf_path):
         try:
@@ -288,16 +316,72 @@ async def download_pdf(callback: CallbackQuery) -> None:
             pass
         return
     
+    # Check file size
+    file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+    use_telethon = False
+    
+    if file_size_mb > 50:
+        from telethon_client import is_telethon_available
+        if is_telethon_available() and file_size_mb <= 2000:
+            use_telethon = True
+            try:
+                await callback.message.edit_text(
+                    f"⏳ Глава большая ({file_size_mb:.1f} MB).\n"
+                    "Отправляю через Telethon..."
+                )
+            except Exception:
+                pass
+        else:
+            os.remove(pdf_path)
+            try:
+                await callback.message.edit_text(
+                    f"❌ Глава слишком большая ({file_size_mb:.1f} MB).\n"
+                    "Лимит Telegram Bot API: 50 MB.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                    ])
+                )
+            except Exception:
+                pass
+            return
+    
     try:
-        pdf_file = FSInputFile(pdf_path, filename=file_name)
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - {ch_name}")
-        
-        if sent_msg.document:
-            store.cache_file(manga_id, chapter_id, "pdf", sent_msg.document.file_id, file_name)
+        if use_telethon:
+            from telethon_client import send_large_file
+            
+            # Create a new message for upload progress (don't delete yet)
+            progress_msg = await callback.message.edit_text("📤 Загрузка: 0%...")
+            upload_progress_cb = create_progress_callback(progress_msg)
+            
+            sent, file_id = await send_large_file(
+                chat_id=callback.from_user.id,
+                file_path=pdf_path,
+                caption=f"📕 {manga_title} - {ch_name}",
+                message_callback=upload_progress_cb
+            )
+            
+            # Delete progress message after upload
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+            
+            if not sent:
+                await callback.message.answer("❌ Не удалось отправить.")
+                return
+            
+            if file_id:
+                store.cache_file(manga_id, chapter_id, "pdf", file_id, file_name)
+        else:
+            pdf_file = FSInputFile(pdf_path, filename=file_name)
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - {ch_name}")
+            
+            if sent_msg.document:
+                store.cache_file(manga_id, chapter_id, "pdf", sent_msg.document.file_id, file_name)
         
         store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
     finally:
@@ -350,7 +434,9 @@ async def download_zip(callback: CallbackQuery) -> None:
             pass
         return
     
-    cbz_path = await download_chapter_as_cbz(pages, f"{manga_title} - {ch_name}")
+    # Create progress callback
+    progress_cb = create_progress_callback(callback.message)
+    cbz_path = await download_chapter_as_cbz(pages, f"{manga_title} - {ch_name}", progress_callback=progress_cb)
     
     if not cbz_path or not os.path.exists(cbz_path):
         try:
@@ -359,16 +445,72 @@ async def download_zip(callback: CallbackQuery) -> None:
             pass
         return
     
+    # Check file size
+    file_size_mb = os.path.getsize(cbz_path) / (1024 * 1024)
+    use_telethon = False
+    
+    if file_size_mb > 50:
+        from telethon_client import is_telethon_available
+        if is_telethon_available() and file_size_mb <= 2000:
+            use_telethon = True
+            try:
+                await callback.message.edit_text(
+                    f"⏳ Глава большая ({file_size_mb:.1f} MB).\n"
+                    "Отправляю через Telethon..."
+                )
+            except Exception:
+                pass
+        else:
+            os.remove(cbz_path)
+            try:
+                await callback.message.edit_text(
+                    f"❌ Глава слишком большая ({file_size_mb:.1f} MB).\n"
+                    "Лимит Telegram Bot API: 50 MB.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                    ])
+                )
+            except Exception:
+                pass
+            return
+    
     try:
-        cbz_file = FSInputFile(cbz_path, filename=file_name)
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - {ch_name}")
-        
-        if sent_msg.document:
-            store.cache_file(manga_id, chapter_id, "cbz", sent_msg.document.file_id, file_name)
+        if use_telethon:
+            from telethon_client import send_large_file
+            
+            # Create a new message for upload progress
+            progress_msg = await callback.message.edit_text("📤 Загрузка: 0%...")
+            upload_progress_cb = create_progress_callback(progress_msg)
+            
+            sent, file_id = await send_large_file(
+                chat_id=callback.from_user.id,
+                file_path=cbz_path,
+                caption=f"📦 {manga_title} - {ch_name}",
+                message_callback=upload_progress_cb
+            )
+            
+            # Delete progress message after upload
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+            
+            if not sent:
+                await callback.message.answer("❌ Не удалось отправить.")
+                return
+            
+            if file_id:
+                store.cache_file(manga_id, chapter_id, "cbz", file_id, file_name)
+        else:
+            cbz_file = FSInputFile(cbz_path, filename=file_name)
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - {ch_name}")
+            
+            if sent_msg.document:
+                store.cache_file(manga_id, chapter_id, "cbz", sent_msg.document.file_id, file_name)
         
         store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
     finally:
@@ -693,7 +835,8 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
         return
     
     # First try without compression
-    pdf_path = await download_volume_as_pdf(all_pages, f"{manga_title} - Том {volume}")
+    progress_cb = create_progress_callback(callback.message)
+    pdf_path = await download_volume_as_pdf(all_pages, f"{manga_title} - Том {volume}", progress_callback=progress_cb)
     
     if not pdf_path or not os.path.exists(pdf_path):
         try:
@@ -731,12 +874,14 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
                 pass
             
             # Retry with compression
+            progress_cb = create_progress_callback(callback.message)
             pdf_path = await download_volume_as_pdf(
                 all_pages, 
                 f"{manga_title} - Том {volume}", 
                 compress=True,
                 max_dimension=1600,
-                quality=70
+                quality=70,
+                progress_callback=progress_cb
             )
             
             if not pdf_path or not os.path.exists(pdf_path):
@@ -773,16 +918,22 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
             # Send via Telethon for large files
             from telethon_client import send_large_file
             
-            try:
-                await callback.message.delete()
-            except Exception:
-                pass
+            # Create a new message for upload progress
+            progress_msg = await callback.message.edit_text("📤 Загрузка: 0%...")
+            upload_progress_cb = create_progress_callback(progress_msg)
             
             sent, file_id = await send_large_file(
                 chat_id=callback.from_user.id,
                 file_path=pdf_path,
-                caption=f"📕 {manga_title} - Том {volume}"
+                caption=f"📕 {manga_title} - Том {volume}",
+                message_callback=upload_progress_cb
             )
+            
+            # Delete progress message after upload
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
             
             if not sent:
                 await callback.message.answer(
@@ -913,7 +1064,8 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
         return
     
     # First try without compression
-    cbz_path = await download_volume_as_cbz(pages_with_info, f"{manga_title} - Том {volume}")
+    progress_cb = create_progress_callback(callback.message)
+    cbz_path = await download_volume_as_cbz(pages_with_info, f"{manga_title} - Том {volume}", progress_callback=progress_cb)
     
     if not cbz_path or not os.path.exists(cbz_path):
         try:
@@ -951,12 +1103,14 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
                 pass
             
             # Retry with compression
+            progress_cb = create_progress_callback(callback.message)
             cbz_path = await download_volume_as_cbz(
                 pages_with_info, 
                 f"{manga_title} - Том {volume}",
                 compress=True,
                 max_dimension=1600,
-                quality=70
+                quality=70,
+                progress_callback=progress_cb
             )
             
             if not cbz_path or not os.path.exists(cbz_path):
@@ -993,16 +1147,22 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
             # Send via Telethon for large files
             from telethon_client import send_large_file
             
-            try:
-                await callback.message.delete()
-            except Exception:
-                pass
+            # Create a new message for upload progress
+            progress_msg = await callback.message.edit_text("📤 Загрузка: 0%...")
+            upload_progress_cb = create_progress_callback(progress_msg)
             
             sent, file_id = await send_large_file(
                 chat_id=callback.from_user.id,
                 file_path=cbz_path,
-                caption=f"📦 {manga_title} - Том {volume}"
+                caption=f"📦 {manga_title} - Том {volume}",
+                message_callback=upload_progress_cb
             )
+            
+            # Delete progress message after upload
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
             
             if not sent:
                 await callback.message.answer(

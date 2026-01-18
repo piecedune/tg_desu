@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Callable, Awaitable
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
     from telethon.types import Message
 
 logger = logging.getLogger(__name__)
+
+# Type for message progress callback
+MessageProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 # Global Telethon client instance
 _telethon_client: TelegramClient | None = None
@@ -97,6 +101,7 @@ async def send_large_file(
     caption: str | None = None,
     filename: str | None = None,
     progress_callback=None,
+    message_callback: MessageProgressCallback | None = None,
 ) -> tuple[Message | None, str | None]:
     """Send large file using Telethon (up to 2GB).
     
@@ -105,7 +110,8 @@ async def send_large_file(
         file_path: Path to the file to send
         caption: Optional caption for the file
         filename: Optional filename override
-        progress_callback: Optional callback(current, total) for progress
+        progress_callback: Optional callback(current, total) for raw progress
+        message_callback: Optional async callback(current, total, text) for message updates
         
     Returns:
         Tuple of (Telethon Message object, file_id string) if successful, (None, None) otherwise.
@@ -124,7 +130,34 @@ async def send_large_file(
         return None, None
     
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    file_size = os.path.getsize(file_path)
     logger.info(f"Sending large file via Telethon: {file_size_mb:.1f} MB to chat {chat_id}")
+    
+    # Create progress wrapper to update message
+    last_update_time = [0.0]
+    
+    async def upload_progress(current: int, total: int):
+        """Progress callback that updates message."""
+        now = time.time()
+        # Update every 3 seconds max
+        if now - last_update_time[0] < 3.0:
+            return
+        last_update_time[0] = now
+        
+        percent = int((current / total) * 100)
+        current_mb = current / (1024 * 1024)
+        total_mb = total / (1024 * 1024)
+        
+        logger.info(f"[Telethon Upload] {percent}% ({current_mb:.1f}/{total_mb:.1f} MB)")
+        
+        if message_callback:
+            try:
+                await message_callback(
+                    current, total, 
+                    f"📤 Загрузка: {percent}% ({current_mb:.1f}/{total_mb:.1f} MB)"
+                )
+            except Exception:
+                pass
     
     try:
         # Send file with Telethon
@@ -134,7 +167,7 @@ async def send_large_file(
             file_path,
             caption=caption,
             force_document=True,
-            progress_callback=progress_callback,
+            progress_callback=upload_progress if message_callback else progress_callback,
             attributes=[],  # Let Telethon determine attributes
         )
         

@@ -7,6 +7,7 @@ import logging
 import os
 import tempfile
 import zipfile
+from typing import Callable, Awaitable
 
 import requests
 from PIL import Image
@@ -15,6 +16,9 @@ from aiogram.types import CallbackQuery
 from desu_client import MangaDetail
 
 logger = logging.getLogger(__name__)
+
+# Type for progress callback: async function(current, total, status_text)
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 
 async def safe_callback_answer(callback: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:
@@ -169,20 +173,42 @@ def create_cbz_from_images(images: list[Image.Image], output_path: str, quality:
             zf.writestr(f"page_{i:03d}.jpg", img_buffer.read())
 
 
-async def download_chapter_as_pdf(pages: list[dict], chapter_name: str) -> str | None:
+async def download_chapter_as_pdf(
+    pages: list[dict], 
+    chapter_name: str,
+    progress_callback: ProgressCallback | None = None
+) -> str | None:
     """Download all pages and create PDF. Returns path to PDF file."""
     images: list[Image.Image] = []
     failed_pages = 0
+    total = len(pages)
     
-    for page in pages:
+    for i, page in enumerate(pages):
         url = page.get("img") or page.get("image") or page.get("url")
         if not url:
             continue
+        
+        # Report progress
+        if progress_callback and i % 3 == 0:  # Update every 3 pages to avoid spam
+            percent = int((i / total) * 100)
+            logger.info(f"[{chapter_name}] Downloading: {percent}% ({i}/{total})")
+            try:
+                await progress_callback(i, total, f"⏳ Скачивание: {percent}% ({i}/{total})")
+            except Exception:
+                pass
+        
         img = await run_sync(download_image, url)
         if img:
             images.append(img)
         else:
             failed_pages += 1
+    
+    if progress_callback:
+        logger.info(f"[{chapter_name}] Creating PDF...")
+        try:
+            await progress_callback(total, total, "📄 Создаю PDF...")
+        except Exception:
+            pass
     
     if failed_pages > 0:
         log_error("pdf_download", f"Failed to download {failed_pages} pages", f"chapter={chapter_name}")
@@ -201,23 +227,46 @@ async def download_chapter_as_pdf(pages: list[dict], chapter_name: str) -> str |
         log_error("pdf_create", str(e), f"chapter={chapter_name}")
         return None
     
+    logger.info(f"[{chapter_name}] PDF created: {os.path.getsize(pdf_path) / (1024*1024):.1f} MB")
     return pdf_path
 
 
-async def download_chapter_as_cbz(pages: list[dict], chapter_name: str) -> str | None:
+async def download_chapter_as_cbz(
+    pages: list[dict], 
+    chapter_name: str,
+    progress_callback: ProgressCallback | None = None
+) -> str | None:
     """Download all pages and create CBZ (Comic Book ZIP). Returns path to CBZ file."""
     images: list[Image.Image] = []
     failed_pages = 0
+    total = len(pages)
     
-    for page in pages:
+    for i, page in enumerate(pages):
         url = page.get("img") or page.get("image") or page.get("url")
         if not url:
             continue
+        
+        # Report progress
+        if progress_callback and i % 3 == 0:
+            percent = int((i / total) * 100)
+            logger.info(f"[{chapter_name}] Downloading: {percent}% ({i}/{total})")
+            try:
+                await progress_callback(i, total, f"⏳ Скачивание: {percent}% ({i}/{total})")
+            except Exception:
+                pass
+        
         img = await run_sync(download_image, url)
         if img:
             images.append(img)
         else:
             failed_pages += 1
+    
+    if progress_callback:
+        logger.info(f"[{chapter_name}] Creating CBZ...")
+        try:
+            await progress_callback(total, total, "📦 Создаю CBZ...")
+        except Exception:
+            pass
     
     if failed_pages > 0:
         log_error("cbz_download", f"Failed to download {failed_pages} pages", f"chapter={chapter_name}")
@@ -250,7 +299,8 @@ async def download_volume_as_pdf(
     volume_name: str, 
     compress: bool = False,
     max_dimension: int = 1800,
-    quality: int = 75
+    quality: int = 75,
+    progress_callback: ProgressCallback | None = None
 ) -> str | None:
     """Download all pages from volume and create PDF. Returns path to PDF file.
     
@@ -260,11 +310,13 @@ async def download_volume_as_pdf(
         compress: If True, compress images to reduce file size
         max_dimension: Max image dimension when compressing
         quality: JPEG quality when compressing (1-100)
+        progress_callback: Async callback for progress updates
     """
     images: list[Image.Image] = []
     failed_pages = 0
+    total = len(pages)
     
-    for page in pages:
+    for i, page in enumerate(pages):
         # Handle both dict and string page formats
         if isinstance(page, dict):
             url = page.get("img") or page.get("image") or page.get("url")
@@ -273,6 +325,15 @@ async def download_volume_as_pdf(
         
         if not url:
             continue
+        
+        # Report progress
+        if progress_callback and i % 5 == 0:  # Update every 5 pages for volumes
+            percent = int((i / total) * 100)
+            logger.info(f"[{volume_name}] Downloading: {percent}% ({i}/{total})")
+            try:
+                await progress_callback(i, total, f"⏳ Скачивание: {percent}% ({i}/{total})")
+            except Exception:
+                pass
             
         img = await run_sync(download_image, url)
         if img:
@@ -281,6 +342,13 @@ async def download_volume_as_pdf(
             images.append(img)
         else:
             failed_pages += 1
+    
+    if progress_callback:
+        logger.info(f"[{volume_name}] Creating PDF...")
+        try:
+            await progress_callback(total, total, "📄 Создаю PDF...")
+        except Exception:
+            pass
     
     if failed_pages > 0:
         log_error("volume_pdf_download", f"Failed to download {failed_pages} pages", f"volume={volume_name}")
@@ -358,7 +426,8 @@ async def download_volume_as_cbz(
     volume_name: str,
     compress: bool = False,
     max_dimension: int = 1800,
-    quality: int = 75
+    quality: int = 75,
+    progress_callback: ProgressCallback | None = None
 ) -> str | None:
     """Download all pages from volume and create CBZ with chapter folders.
     
@@ -368,6 +437,7 @@ async def download_volume_as_cbz(
         compress: If True, compress images to reduce file size
         max_dimension: Max image dimension when compressing
         quality: JPEG quality when compressing (1-100)
+        progress_callback: Async callback for progress updates
     """
     if not pages_with_info:
         log_error("volume_cbz_create", "No pages provided", f"volume={volume_name}")
@@ -378,9 +448,60 @@ async def download_volume_as_cbz(
     cbz_path = os.path.join(temp_dir, f"{safe_name}.cbz")
     
     img_quality = quality if compress else 85
+    total = len(pages_with_info)
     
     try:
-        await run_sync(create_cbz_with_chapters, pages_with_info, cbz_path, img_quality, compress, max_dimension)
+        # Download images with progress tracking
+        downloaded_images: list[tuple[str, int, Image.Image]] = []  # (chapter, page_num, image)
+        page_count_per_chapter: dict[str, int] = {}
+        
+        for i, page_info in enumerate(pages_with_info):
+            url = page_info.get("url")
+            chapter = page_info.get("chapter", "unknown")
+            
+            if not url:
+                continue
+            
+            # Report progress
+            if progress_callback and i % 5 == 0:
+                percent = int((i / total) * 100)
+                logger.info(f"[{volume_name}] Downloading: {percent}% ({i}/{total})")
+                try:
+                    await progress_callback(i, total, f"⏳ Скачивание: {percent}% ({i}/{total})")
+                except Exception:
+                    pass
+            
+            img = await run_sync(download_image, url)
+            if not img:
+                continue
+            
+            if compress:
+                img = compress_image_for_volume(img, max_dimension)
+            
+            # Track page number per chapter
+            if chapter not in page_count_per_chapter:
+                page_count_per_chapter[chapter] = 0
+            page_count_per_chapter[chapter] += 1
+            page_num = page_count_per_chapter[chapter]
+            
+            downloaded_images.append((str(chapter), page_num, img))
+        
+        if progress_callback:
+            logger.info(f"[{volume_name}] Creating CBZ...")
+            try:
+                await progress_callback(total, total, "📦 Создаю CBZ...")
+            except Exception:
+                pass
+        
+        # Create CBZ from downloaded images
+        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for chapter, page_num, img in downloaded_images:
+                safe_chapter = "".join(c if c.isalnum() or c in "._- " else "_" for c in chapter)
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format="JPEG", quality=img_quality)
+                img_buffer.seek(0)
+                zf.writestr(f"{safe_chapter}/page_{page_num:03d}.jpg", img_buffer.read())
+                
     except Exception as e:
         log_error("volume_cbz_create", str(e), f"volume={volume_name}")
         return None
@@ -390,4 +511,5 @@ async def download_volume_as_cbz(
         log_error("volume_cbz_create", "Empty CBZ file", f"volume={volume_name}")
         return None
     
+    logger.info(f"[{volume_name}] CBZ created: {os.path.getsize(cbz_path) / (1024*1024):.1f} MB")
     return cbz_path
