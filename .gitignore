@@ -5,7 +5,7 @@ __pycache__/
 *.db
 # C extensions
 *.so
-.github
+.github/
 
 # Distribution / packaging
 .Python
