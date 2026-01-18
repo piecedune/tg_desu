@@ -1,0 +1,506 @@
+"""Manga handlers: details, chapters, favorites, downloads."""
+from __future__ import annotations
+
+import os
+
+from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+import config
+from keyboards import build_chapter_keyboard, build_format_keyboard, build_manga_buttons
+from states import ChapterStates
+from dependencies import get_client, get_favorites
+from utils import (
+    run_sync,
+    chapter_title,
+    format_manga_detail,
+    download_chapter_as_pdf,
+    download_chapter_as_zip,
+)
+
+router = Router()
+
+
+@router.callback_query(F.data.startswith("manga:"))
+async def show_manga(callback: CallbackQuery) -> None:
+    """Show manga details."""
+    await callback.answer()
+    if not callback.message:
+        return
+    manga_id = int(callback.data.split(":")[1])
+    client = get_client()
+    store = get_favorites()
+    user_id = callback.from_user.id
+    
+    try:
+        await callback.message.edit_text("⏳ Загрузка...")
+    except Exception:
+        pass
+
+    detail = await run_sync(client.get_manga_detail, manga_id)
+    is_favorite = store.has(user_id, manga_id)
+    
+    # Add to viewing history
+    store.add_manga_to_history(user_id, manga_id, detail.title, detail.cover)
+
+    description = format_manga_detail(detail)
+    reply_markup = build_manga_buttons(manga_id, is_favorite, config.BOT_USERNAME)
+
+    if detail.cover:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer_photo(detail.cover, caption=description, reply_markup=reply_markup)
+    else:
+        try:
+            await callback.message.edit_text(description, reply_markup=reply_markup)
+        except Exception:
+            await callback.message.answer(description, reply_markup=reply_markup)
+
+
+@router.callback_query(F.data.startswith("fav:"))
+async def handle_favorite(callback: CallbackQuery) -> None:
+    """Add/remove manga from favorites."""
+    if not callback.message:
+        await callback.answer()
+        return
+    action, manga_id_text = callback.data.split(":")[1:]
+    manga_id = int(manga_id_text)
+    store = get_favorites()
+    client = get_client()
+    user_id = callback.from_user.id
+
+    if action == "add":
+        detail = await run_sync(client.get_manga_detail, manga_id)
+        store.add(user_id, manga_id, detail.title, detail.cover)
+        is_favorite = True
+        await callback.answer("✅ Добавлено в избранное!")
+    else:
+        store.remove(user_id, manga_id)
+        is_favorite = False
+        await callback.answer("❌ Удалено из избранного!")
+    
+    new_markup = build_manga_buttons(manga_id, is_favorite, config.BOT_USERNAME)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_markup)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("chapters:"))
+async def show_chapters(callback: CallbackQuery) -> None:
+    """Show chapter list with read chapters marked."""
+    await callback.answer()
+    if not callback.message:
+        return
+    _, manga_id_text, page_text = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    page = int(page_text)
+
+    client = get_client()
+    store = get_favorites()
+    
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    if not chapters:
+        await callback.message.edit_text("Нет доступных глав.")
+        return
+
+    # Get read chapters for this user
+    read_chapters = store.get_read_chapters(callback.from_user.id, manga_id)
+    read_chapter_ids = set(read_chapters)
+
+    keyboard = build_chapter_keyboard(chapters, manga_id, page, read_chapter_ids=read_chapter_ids)
+    try:
+        await callback.message.edit_text("Выберите главу (✅ = прочитано):", reply_markup=keyboard)
+    except Exception:
+        await callback.message.answer("Выберите главу (✅ = прочитано):", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("goto_ch:"))
+async def prompt_chapter_number(callback: CallbackQuery, state: FSMContext) -> None:
+    """Prompt user to enter chapter number."""
+    await callback.answer()
+    if not callback.message:
+        return
+    manga_id = int(callback.data.split(":")[1])
+    
+    await state.set_state(ChapterStates.waiting_chapter_number)
+    await state.update_data(manga_id=manga_id)
+    
+    client = get_client()
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    
+    ch_numbers = []
+    for ch in chapters:
+        num = ch.get("ch") or ch.get("chapter") or ch.get("number")
+        if num:
+            try:
+                ch_numbers.append(float(num))
+            except (ValueError, TypeError):
+                pass
+    
+    hint = f"Available chapters: {min(ch_numbers)} - {max(ch_numbers)}" if ch_numbers else ""
+    
+    try:
+        await callback.message.edit_text(
+            f"🔢 Enter chapter number:\n{hint}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Cancel", callback_data=f"chapters:{manga_id}:1")]
+            ])
+        )
+    except Exception:
+        await callback.message.answer(f"🔢 Enter chapter number:\n{hint}")
+
+
+@router.message(ChapterStates.waiting_chapter_number)
+async def handle_chapter_number_input(message: Message, state: FSMContext) -> None:
+    """Handle chapter number input."""
+    data = await state.get_data()
+    manga_id = data.get("manga_id")
+    await state.clear()
+    
+    if not manga_id:
+        await message.answer("Something went wrong. Please try again.")
+        return
+    
+    chapter_input = message.text.strip()
+    
+    client = get_client()
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    
+    found_chapter = None
+    for ch in chapters:
+        ch_num = ch.get("ch") or ch.get("chapter") or ch.get("number")
+        if ch_num and str(ch_num) == chapter_input:
+            found_chapter = ch
+            break
+    
+    if not found_chapter:
+        for ch in chapters:
+            ch_num = ch.get("ch") or ch.get("chapter") or ch.get("number")
+            if ch_num and str(ch_num).startswith(chapter_input):
+                found_chapter = ch
+                break
+    
+    if not found_chapter:
+        await message.answer(
+            f"❌ Chapter {chapter_input} not found.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📚 Back to chapters", callback_data=f"chapters:{manga_id}:1")]
+            ])
+        )
+        return
+    
+    chapter_id = found_chapter.get("id")
+    ch_name = chapter_title(found_chapter)
+    
+    await message.answer(
+        f"📚 {ch_name}\n\nChoose download format:",
+        reply_markup=build_format_keyboard(manga_id, chapter_id)
+    )
+
+
+@router.callback_query(F.data.startswith("chapter:"))
+async def show_chapter_options(callback: CallbackQuery) -> None:
+    """Show format choice for chapter download or use default format."""
+    await callback.answer()
+    if not callback.message:
+        return
+    _, manga_id_text, chapter_id_text = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    chapter_id = int(chapter_id_text)
+    
+    store = get_favorites()
+    user_id = callback.from_user.id
+    user_format = store.get_download_format(user_id)
+
+    client = get_client()
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    chapter_info = next((ch for ch in chapters if ch.get("id") == chapter_id), {})
+    ch_name = chapter_title(chapter_info) or f"Chapter_{chapter_id}"
+    
+    try:
+        await callback.message.edit_text(
+            f"📚 {ch_name}\n\nChoose download format (⭐ = default):",
+            reply_markup=build_format_keyboard(manga_id, chapter_id, user_format)
+        )
+    except Exception:
+        await callback.message.answer(
+            f"📚 {ch_name}\n\nChoose download format (⭐ = default):",
+            reply_markup=build_format_keyboard(manga_id, chapter_id, user_format)
+        )
+
+
+@router.callback_query(F.data.startswith("dl_pdf:"))
+async def download_pdf(callback: CallbackQuery) -> None:
+    """Download chapter as PDF."""
+    await callback.answer()
+    if not callback.message:
+        return
+    _, manga_id_text, chapter_id_text = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    chapter_id = int(chapter_id_text)
+
+    store = get_favorites()
+    client = get_client()
+    
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    chapter_info = next((ch for ch in chapters if ch.get("id") == chapter_id), {})
+    ch_name = chapter_title(chapter_info) or f"Chapter_{chapter_id}"
+    
+    detail = await run_sync(client.get_manga_detail, manga_id)
+    manga_title = detail.title if detail else "Manga"
+    file_name = f"{manga_title} - {ch_name}.pdf"
+    
+    # Check cache
+    cached_file_id = store.get_cached_file(manga_id, chapter_id, "pdf")
+    if cached_file_id:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer_document(cached_file_id, caption=f"📕 {manga_title} - {ch_name}")
+        store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
+        return
+    
+    try:
+        await callback.message.edit_text(f"⏳ Downloading {ch_name} as PDF... Please wait.")
+    except Exception:
+        pass
+    
+    pages = await run_sync(client.get_chapter_pages, manga_id, chapter_id)
+    if not pages:
+        try:
+            await callback.message.edit_text("No pages found for this chapter.")
+        except Exception:
+            pass
+        return
+    
+    pdf_path = await download_chapter_as_pdf(pages, f"{manga_title} - {ch_name}")
+    
+    if not pdf_path or not os.path.exists(pdf_path):
+        try:
+            await callback.message.edit_text("❌ Failed to create PDF.")
+        except Exception:
+            pass
+        return
+    
+    try:
+        pdf_file = FSInputFile(pdf_path, filename=file_name)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - {ch_name}")
+        
+        if sent_msg.document:
+            store.cache_file(manga_id, chapter_id, "pdf", sent_msg.document.file_id, file_name)
+        
+        store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
+    finally:
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+
+
+@router.callback_query(F.data.startswith("dl_zip:"))
+async def download_zip(callback: CallbackQuery) -> None:
+    """Download chapter as ZIP."""
+    await callback.answer()
+    if not callback.message:
+        return
+    _, manga_id_text, chapter_id_text = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    chapter_id = int(chapter_id_text)
+
+    store = get_favorites()
+    client = get_client()
+    
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    chapter_info = next((ch for ch in chapters if ch.get("id") == chapter_id), {})
+    ch_name = chapter_title(chapter_info) or f"Chapter_{chapter_id}"
+    
+    detail = await run_sync(client.get_manga_detail, manga_id)
+    manga_title = detail.title if detail else "Manga"
+    file_name = f"{manga_title} - {ch_name}.zip"
+    
+    # Check cache
+    cached_file_id = store.get_cached_file(manga_id, chapter_id, "zip")
+    if cached_file_id:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer_document(cached_file_id, caption=f"🗂 {manga_title} - {ch_name}")
+        store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
+        return
+    
+    try:
+        await callback.message.edit_text(f"⏳ Downloading {ch_name} as ZIP... Please wait.")
+    except Exception:
+        pass
+    
+    pages = await run_sync(client.get_chapter_pages, manga_id, chapter_id)
+    if not pages:
+        try:
+            await callback.message.edit_text("No pages found for this chapter.")
+        except Exception:
+            pass
+        return
+    
+    zip_path = await download_chapter_as_zip(pages, f"{manga_title} - {ch_name}")
+    
+    if not zip_path or not os.path.exists(zip_path):
+        try:
+            await callback.message.edit_text("❌ Failed to create ZIP.")
+        except Exception:
+            pass
+        return
+    
+    try:
+        zip_file = FSInputFile(zip_path, filename=file_name)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        sent_msg = await callback.message.answer_document(zip_file, caption=f"🗂 {manga_title} - {ch_name}")
+        
+        if sent_msg.document:
+            store.cache_file(manga_id, chapter_id, "zip", sent_msg.document.file_id, file_name)
+        
+        store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
+    finally:
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+
+
+@router.callback_query(F.data.startswith("read_album:"))
+async def read_album(callback: CallbackQuery) -> None:
+    """Read chapter as album (media group) - sends images directly to chat."""
+    from aiogram.types import InputMediaPhoto
+    
+    await callback.answer()
+    if not callback.message:
+        return
+    _, manga_id_text, chapter_id_text = callback.data.split(":")
+    manga_id = int(manga_id_text)
+    chapter_id = int(chapter_id_text)
+
+    store = get_favorites()
+    client = get_client()
+    
+    chapters = await run_sync(client.get_manga_chapters, manga_id)
+    chapter_info = next((ch for ch in chapters if ch.get("id") == chapter_id), {})
+    ch_name = chapter_title(chapter_info) or f"Chapter_{chapter_id}"
+    
+    detail = await run_sync(client.get_manga_detail, manga_id)
+    manga_title = detail.title if detail else "Manga"
+    
+    # Check cache first
+    cached_album = store.get_cached_album(manga_id, chapter_id)
+    if cached_album:
+        try:
+            await callback.message.edit_text(f"📖 <b>{manga_title}</b>\n📚 {ch_name}\n\n⚡ Отправляю из кэша...", parse_mode="HTML")
+        except Exception:
+            pass
+        
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        
+        # Send cached album
+        for batch_file_ids in cached_album:
+            media_group = [InputMediaPhoto(media=file_id) for file_id in batch_file_ids]
+            try:
+                await callback.message.answer_media_group(media_group)
+            except Exception as e:
+                store.log_error("album_cache_send", str(e), f"manga_id={manga_id}, chapter_id={chapter_id}")
+        
+        # Mark as read
+        store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
+        
+        nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📖 К списку глав", callback_data=f"chapters:{manga_id}:1")]
+        ])
+        await callback.message.answer("✅ Глава загружена", reply_markup=nav_keyboard)
+        return
+    
+    try:
+        await callback.message.edit_text(f"⏳ Загружаю {ch_name}...")
+    except Exception:
+        pass
+    
+    try:
+        pages = await run_sync(client.get_chapter_pages, manga_id, chapter_id)
+    except Exception as e:
+        store.log_error("album_read", str(e), f"manga_id={manga_id}, chapter_id={chapter_id}")
+        await callback.message.edit_text("❌ Не удалось загрузить страницы.")
+        return
+    
+    if not pages:
+        await callback.message.edit_text("❌ Страницы не найдены.")
+        return
+    
+    # Extract URLs from page dicts
+    page_urls = []
+    for page in pages:
+        url = page.get("img") or page.get("image") or page.get("url")
+        if url:
+            page_urls.append(url)
+    
+    if not page_urls:
+        await callback.message.edit_text("❌ Не удалось получить ссылки на страницы.")
+        return
+    
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    
+    # Send pages in groups of 10 (Telegram limit for media groups)
+    await callback.message.answer(f"📖 <b>{manga_title}</b>\n📚 {ch_name}\n\n📄 Страниц: {len(page_urls)}\n⏳ Загрузка...", parse_mode="HTML")
+    
+    # Download and send images (Telegram can't fetch from desu.uno directly due to headers)
+    from utils import download_image
+    from aiogram.types import BufferedInputFile
+    import io
+    
+    for batch_index, i in enumerate(range(0, len(page_urls), 10)):
+        batch_urls = page_urls[i:i + 10]
+        media_group = []
+        
+        for url in batch_urls:
+            try:
+                img = await run_sync(download_image, url)
+                if img:
+                    img_buffer = io.BytesIO()
+                    img.save(img_buffer, format="JPEG", quality=85)
+                    img_buffer.seek(0)
+                    media_group.append(InputMediaPhoto(
+                        media=BufferedInputFile(img_buffer.read(), filename="page.jpg")
+                    ))
+            except Exception as e:
+                store.log_error("album_download", str(e), f"url={url[:50]}")
+                continue
+        
+        if media_group:
+            try:
+                sent_messages = await callback.message.answer_media_group(media_group)
+                # Cache file_ids for future use
+                file_ids = [msg.photo[-1].file_id for msg in sent_messages if msg.photo]
+                if file_ids:
+                    store.cache_album_batch(manga_id, chapter_id, batch_index, file_ids)
+            except Exception as e:
+                store.log_error("album_send", str(e), f"batch={i}-{i+len(batch_urls)}")
+                await callback.message.answer(f"⚠️ Ошибка при отправке страниц {i+1}-{i+len(batch_urls)}")
+    
+    # Mark as read
+    store.mark_chapter_read(callback.from_user.id, manga_id, chapter_id, ch_name)
+    
+    # Navigation buttons
+    nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 К списку глав", callback_data=f"chapters:{manga_id}:1")]
+    ])
+    await callback.message.answer("✅ Глава загружена", reply_markup=nav_keyboard)
