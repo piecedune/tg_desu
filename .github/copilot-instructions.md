@@ -2,91 +2,121 @@
 
 ## Architecture Overview
 
-This is an **aiogram 3.x** Telegram bot that interfaces with the Desu manga API. Modular architecture:
+**aiogram 3.x** Telegram bot для работы с Desu manga API. Модульная архитектура:
 
 ```
 src/
-├── bot.py              # Entry point - bot initialization
-├── config.py           # Configuration, constants, genres
-├── keyboards.py        # All keyboard builders
-├── utils.py            # Download, PDF/ZIP creation utilities
-├── states.py           # FSM state definitions
-├── dependencies.py     # Dependency injection (client, store)
-├── desu_client.py      # Sync HTTP client for Desu API
-├── favorites.py        # SQLite storage (users, favorites, cache)
+├── bot.py              # Точка входа, инициализация бота
+├── config.py           # Конфигурация, константы, жанры
+├── keyboards.py        # Все билдеры клавиатур
+├── utils.py            # Скачивание, создание PDF/ZIP
+├── states.py           # FSM состояния
+├── dependencies.py     # Инъекция зависимостей (client, store)
+├── desu_client.py      # Синхронный HTTP клиент Desu API
+├── favorites.py        # SQLite хранилище
+├── middlewares.py      # Антиспам middleware
 └── handlers/
-    ├── __init__.py     # Router setup
-    ├── base.py         # /start, Profile, Catalog, Search
-    ├── search.py       # Genre/keyword search handlers
-    ├── manga.py        # Manga details, chapters, downloads
-    └── admin.py        # Broadcast, stats (admin only)
+    ├── __init__.py     # Настройка роутеров
+    ├── base.py         # /start, Profile, Catalog, Search, Random
+    ├── search.py       # Поиск по жанрам/названию с пагинацией
+    ├── manga.py        # Детали манги, главы, скачивание, альбомы
+    └── admin.py        # Рассылка, статистика, бэкап (только админ)
 ```
 
 ## Key Patterns
 
 ### Async/Sync Bridge
-The `DesuClient` uses synchronous `requests`. Bot handlers wrap calls with `run_sync()`:
+`DesuClient` использует синхронный `requests`. Хендлеры оборачивают вызовы в `run_sync()`:
 ```python
 from utils import run_sync
 results = await run_sync(client.search_manga, keywords=message.text)
 ```
 
 ### Dependency Injection
-Initialize in `bot.py`, access anywhere:
+Инициализация в `bot.py`, доступ откуда угодно:
 ```python
 from dependencies import get_client, get_favorites
-client = get_client()   # Returns DesuClient
-store = get_favorites() # Returns FavoritesStore
+client = get_client()   # DesuClient
+store = get_favorites() # FavoritesStore
 ```
 
 ### Callback Data Format
-Inline button callbacks use colon-separated format: `action:param1:param2`
-- `manga:{id}` - Show manga details
-- `chapters:{manga_id}:{page}` - Paginated chapter list
-- `chapter:{manga_id}:{chapter_id}` - Show format choice
-- `dl_pdf:{manga_id}:{chapter_id}` - Download as PDF
-- `dl_zip:{manga_id}:{chapter_id}` - Download as ZIP
-- `fav:add|remove:{manga_id}` - Toggle favorites
-- `search:new|popular|keywords|genres` - Search actions
-- `genre:{api_name}` - Search by genre
-- `genres_page:{page}` - Genre pagination
-- `goto_ch:{manga_id}` - Enter chapter number manually
-- `broadcast:confirm|cancel` - Admin broadcast
+Inline кнопки используют формат через двоеточие: `action:param1:param2`
+
+**Основные:**
+- `manga:{id}` — детали манги
+- `chapters:{manga_id}:{page}` — список глав с пагинацией
+- `chapter:{manga_id}:{chapter_id}` — выбор формата
+- `read_album:{manga_id}:{chapter_id}` — читать как альбом
+- `dl_pdf:{manga_id}:{chapter_id}` — скачать PDF
+- `dl_zip:{manga_id}:{chapter_id}` — скачать ZIP
+- `fav:add|remove:{manga_id}` — добавить/убрать из избранного
+
+**Поиск:**
+- `search:new|popular|keywords|genres` — типы поиска
+- `genre:{api_name}` — поиск по жанру
+- `genres_page:{page}` — пагинация жанров
+- `results:{type}:{query}:{page}` — пагинация результатов поиска
+
+**Навигация:**
+- `goto_ch:{manga_id}` — ввести номер главы
+- `profile:favorites|history|settings` — разделы профиля
+
+**Админ:**
+- `broadcast:confirm|cancel` — подтверждение рассылки
 
 ### FSM States (states.py)
 ```python
 class SearchStates(StatesGroup):
-    keywords = State()           # Awaiting keyword input
+    keywords = State()                # Ввод ключевых слов
 
 class ChapterStates(StatesGroup):
-    waiting_chapter_number = State()  # Awaiting chapter number
+    waiting_chapter_number = State()  # Ввод номера главы
 
 class BroadcastStates(StatesGroup):
-    waiting_content = State()    # Admin: awaiting broadcast content
-    confirm = State()            # Admin: confirmation step
+    waiting_content = State()         # Контент рассылки
+    confirm = State()                 # Подтверждение
 ```
 
 ## Data Models
 
 ### desu_client.py
-- **`MangaSummary`** - List/search results (id, title, cover, genres)  
-- **`MangaDetail`** - Full manga info (adds year, description, chapters_count, rating)
+- **`MangaSummary`** — результаты поиска (id, title, cover, genres)
+- **`MangaDetail`** — полная инфо (+ year, description, chapters_count, rating)
 
-API responses use `russian` field for localized titles with `title` as fallback.
+API возвращает `russian` для локализованных названий, `title` как fallback.
 
-### favorites.py - Database Schema
+### favorites.py — Database Schema
 ```sql
--- User tracking with activity
+-- Пользователи
 users (user_id, username, first_name, last_name, created_at, last_active, is_blocked)
 
--- Favorites with timestamp
+-- Избранное
 favorites (user_id, manga_id, title, cover, added_at)
 
--- Reading history
+-- История чтения
 reading_history (user_id, manga_id, chapter_id, chapter_num, read_at)
 
--- File cache (Telegram file_id for instant re-sending)
+-- Кэш файлов (Telegram file_id)
 file_cache (manga_id, chapter_id, format, file_id, file_name, created_at)
+
+-- Кэш альбомов (file_id страниц)
+album_cache (manga_id, chapter_id, batch_index, file_ids, created_at)
+
+-- Настройки пользователя
+user_settings (user_id, download_format, updated_at)
+
+-- История просмотров манги
+manga_history (user_id, manga_id, title, cover, viewed_at)
+
+-- Счетчик глав (для уведомлений)
+manga_chapter_count (manga_id, chapter_count, last_checked)
+
+-- Настройки уведомлений
+notification_settings (user_id, notifications_enabled)
+
+-- Лог ошибок
+error_log (id, error_type, error_message, context, created_at)
 ```
 
 ### Key Store Methods
@@ -103,125 +133,187 @@ store.add(user_id, manga_id, title, cover)
 store.remove(user_id, manga_id)
 store.list(user_id) -> list[tuple]
 store.has(user_id, manga_id) -> bool
+store.get_all_favorited_manga_ids() -> set[int]
 
 # Reading history
 store.mark_chapter_read(user_id, manga_id, chapter_id, chapter_num)
-store.get_read_chapters(user_id, manga_id) -> list[int]
+store.get_read_chapters(user_id, manga_id) -> set[int]
 store.get_last_read_chapter(user_id, manga_id) -> int | None
 
-# File cache (avoid re-uploading)
+# File cache
 store.get_cached_file(manga_id, chapter_id, format) -> str | None
 store.cache_file(manga_id, chapter_id, format, file_id, file_name)
 store.clear_file_cache(manga_id=None) -> int
 
+# Album cache
+store.get_cached_album(manga_id, chapter_id) -> list[list[str]] | None
+store.cache_album_batch(manga_id, chapter_id, batch_index, file_ids)
+store.clear_album_cache(manga_id=None) -> int
+
+# Notifications
+store.get_users_with_favorite(manga_id) -> list[int]
+store.get_manga_chapter_count(manga_id) -> int | None
+store.set_manga_chapter_count(manga_id, count)
+store.get_notification_enabled(user_id) -> bool
+store.set_notification_enabled(user_id, enabled)
+
+# Error logging
+store.log_error(error_type, error_message, context=None)
+store.get_recent_errors(limit=50) -> list[tuple]
+
 # Stats
-store.get_stats() -> dict  # total_users, active_users_7d, total_favorites, etc.
+store.get_stats() -> dict
 ```
 
 ## Configuration (config.py)
 
 ### Environment Variables
-- `TELEGRAM_TOKEN` (required) - Bot token from @BotFather
-- `DESU_BASE_URL` (optional) - Defaults to `https://desu.uno`
-- `ADMIN_ID` (optional) - Telegram user ID for admin commands
+- `TELEGRAM_TOKEN` (required) — токен от @BotFather
+- `DESU_BASE_URL` (optional) — по умолчанию `https://desu.uno`
+- `ADMIN_ID` (optional) — Telegram ID админа
 
 ### Genre Mapping
 ```python
 GENRES = {
-    "Action": "Экшен",      # API name -> Display name (Russian)
+    "Action": "Экшен",       # API name -> Display name (Russian)
     "Romance": "Романтика",
-    # ... 24 genres total
+    # ... 24+ жанров
 }
 ```
-Use English names for API calls, Russian names for display.
+Для API используй английские названия, для UI — русские.
 
 ## Keyboards (keyboards.py)
 
 ```python
-MAIN_MENU                    # ReplyKeyboard: Profile, Catalog, Search
-build_search_menu()          # Genres, Keywords, New, Popular
-build_catalog_menu()         # New Releases, Popular
-build_genre_keyboard(page)   # Paginated genre selection
-build_chapter_keyboard(...)  # Paginated chapters with "Enter number" button
-build_manga_buttons(...)     # Chapters + Add/Remove Favorite
-build_format_keyboard(...)   # PDF / ZIP choice
-build_search_results(...)    # Manga list from search
+MAIN_MENU                              # ReplyKeyboard: Профиль, Каталог, Поиск, Случайная
+build_search_menu()                    # Жанры, По названию, Новинки, Популярное
+build_catalog_menu()                   # Новинки, Популярное
+build_genre_keyboard(page)             # Пагинация жанров
+build_chapter_keyboard(chapters, ..., read_chapter_ids)  # Главы с ✅ для прочитанных
+build_manga_buttons(manga_id, is_favorite, bot_username)  # Главы + Избранное + Поделиться
+build_format_keyboard(manga_id, chapter_id)  # Читать здесь / PDF / ZIP
+build_search_results(results, page, search_type, search_query)  # С пагинацией
+build_profile_menu()                   # Избранное, История, Настройки
+build_settings_keyboard(format, notifications)  # Настройки пользователя
 ```
 
 ## Utils (utils.py)
 
 ```python
-# Async wrapper for sync functions
+# Async wrapper
 await run_sync(func, *args, **kwargs)
 
-# Chapter title formatting
-chapter_title(chapter_dict) -> str  # "V1 Ch.10" or "Chapter"
+# Форматирование
+chapter_title(chapter_dict) -> str      # "Том 1 Гл.10" или "Глава"
+format_manga_detail(detail, max=1000) -> str
 
-# Manga detail formatting (truncates for Telegram limits)
-format_manga_detail(detail, max_length=1000) -> str
+# Скачивание (с Referer header)
+download_image(url) -> Image | None
 
-# Image download with proper headers
-download_image(url) -> Image | None  # Includes Referer header
-
-# File creation
+# Создание файлов
 create_pdf_from_images(images, output_path)
 create_zip_from_images(images, output_path)
 await download_chapter_as_pdf(pages, chapter_name) -> str | None
 await download_chapter_as_zip(pages, chapter_name) -> str | None
 ```
 
+## Middlewares (middlewares.py)
+
+### ThrottlingMiddleware
+Антиспам с многоуровневой защитой:
+- Rate limiting (интервал между запросами)
+- Лимит запросов в минуту (30)
+- Система предупреждений (3 до бана)
+- Временный бан (60 сек)
+
+```python
+ThrottlingMiddleware(
+    rate_limit=0.5,              # Мин. интервал сообщений
+    callback_limit=0.3,          # Мин. интервал кнопок
+    max_requests_per_minute=30,  # Макс. запросов в минуту
+    warn_threshold=3,            # Предупреждений до бана
+    ban_duration=60,             # Длительность бана (сек)
+)
+```
+
 ## Admin Features
 
-### Commands (only for ADMIN_ID user)
-- `/broadcast` - Send message/photo to all users
-- `/stats` - Show bot statistics
-- `/cancel` - Cancel current operation
+### Commands (только для ADMIN_ID)
+- `/broadcast` — рассылка всем пользователям (текст или фото)
+- `/stats` — статистика бота
+- `/backup` — скачать favorites.db
+- `/cancel` — отменить текущую операцию
 
 ### Broadcast Flow
-1. Admin sends `/broadcast`
-2. Admin sends text or photo with caption
-3. Confirmation buttons appear
-4. On confirm: sends to all non-blocked users with 50ms delay
+1. Админ отправляет `/broadcast`
+2. Админ отправляет текст или фото с подписью
+3. Появляются кнопки подтверждения
+4. При подтверждении: отправка всем с задержкой 50мс
 
 ## Development
 
-### Run the bot
+### Запуск
 ```bash
-cd src
+cd oes/src
 python bot.py
 ```
 
-### Adding New Handlers
-1. Create handler in appropriate file under `handlers/`
-2. Use `@router.message()` or `@router.callback_query()` decorators
-3. For callback queries, always call `await callback.answer()` first
-4. Check `callback.message` existence before editing
-5. Import dependencies: `from dependencies import get_client, get_favorites`
+### Добавление хендлеров
+1. Создай хендлер в `handlers/`
+2. Используй `@router.message()` или `@router.callback_query()`
+3. Для callback — всегда `await callback.answer()` первым
+4. Проверяй `callback.message` перед редактированием
+5. Импорты: `from dependencies import get_client, get_favorites`
 
 ### File Caching Strategy
-When sending documents:
-1. Check `store.get_cached_file(manga_id, chapter_id, format)`
-2. If cached: send by `file_id` (instant)
-3. If not: download, create file, send, then `store.cache_file(...)` the returned `file_id`
+```python
+# 1. Проверь кэш
+cached = store.get_cached_file(manga_id, chapter_id, "pdf")
+if cached:
+    await message.answer_document(cached)  # Мгновенно!
+    return
 
-### Error Handling Pattern
+# 2. Скачай и отправь
+sent = await message.answer_document(FSInputFile(path))
+
+# 3. Сохрани file_id
+store.cache_file(manga_id, chapter_id, "pdf", sent.document.file_id)
+```
+
+### Album Caching
+```python
+# Первый раз: скачай изображения, отправь, сохрани file_ids
+sent_messages = await message.answer_media_group(media_group)
+file_ids = [msg.photo[-1].file_id for msg in sent_messages]
+store.cache_album_batch(manga_id, chapter_id, batch_index, file_ids)
+
+# Повторно: отправь по file_id
+cached = store.get_cached_album(manga_id, chapter_id)
+for batch_file_ids in cached:
+    media = [InputMediaPhoto(media=fid) for fid in batch_file_ids]
+    await message.answer_media_group(media)
+```
+
+### Error Handling
 ```python
 try:
     await callback.message.edit_text("...")
 except Exception:
-    await callback.message.answer("...")  # Fallback for photos/etc
+    await callback.message.answer("...")  # Fallback для фото и т.д.
 ```
 
 ## Files
 
-- `favorites.db` - SQLite database (created in working directory)
-- `.env` - Environment configuration (not committed)
+- `favorites.db` — SQLite база (создается в рабочей директории)
+- `.env` — конфигурация (не коммитить!)
+- `menu/` — изображения для меню (опционально)
 
 ## API Notes
 
 ### Desu API (desu.uno)
-- Base endpoint: `/manga/api`
-- Search params: `search`, `genres` (English), `order` (popular/updated), `limit`, `page`
-- Response wrapped in `{"response": [...]}` 
-- Genres in response are comma-separated strings, not arrays
-- Images require `Referer: https://desu.uno/` header
+- Endpoint: `/manga/api`
+- Params: `search`, `genres` (English), `order` (popular/updated), `limit`, `page`
+- Response: `{"response": [...]}`
+- Жанры в ответе — строки через запятую
+- Изображения требуют `Referer: https://desu.uno/`
+- Максимальный manga_id для random: ~6965
