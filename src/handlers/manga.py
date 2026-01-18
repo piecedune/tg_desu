@@ -778,7 +778,7 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
             except Exception:
                 pass
             
-            sent = await send_large_file(
+            sent, file_id = await send_large_file(
                 chat_id=callback.from_user.id,
                 file_path=pdf_path,
                 caption=f"📕 {manga_title} - Том {volume}"
@@ -793,8 +793,9 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
                 )
                 return
             
-            # Note: Telethon message doesn't have same file_id format as aiogram
-            # So we don't cache it for now
+            # Cache file_id from Telethon (compatible with aiogram)
+            if file_id:
+                store.cache_volume(manga_id, volume, "pdf", file_id, file_name)
         else:
             # Send via aiogram (Bot API)
             pdf_file = FSInputFile(pdf_path, filename=file_name)
@@ -804,7 +805,7 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
                 pass
             sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - Том {volume}")
             
-            # Cache file_id (only for aiogram)
+            # Cache file_id
             if sent_msg.document:
                 store.cache_volume(manga_id, volume, "pdf", sent_msg.document.file_id, file_name)
         
@@ -997,7 +998,7 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
             except Exception:
                 pass
             
-            sent = await send_large_file(
+            sent, file_id = await send_large_file(
                 chat_id=callback.from_user.id,
                 file_path=cbz_path,
                 caption=f"📦 {manga_title} - Том {volume}"
@@ -1011,6 +1012,10 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
                     ])
                 )
                 return
+            
+            # Cache file_id from Telethon (compatible with aiogram)
+            if file_id:
+                store.cache_volume(manga_id, volume, "cbz", file_id, file_name)
         else:
             # Send via aiogram (Bot API)
             cbz_file = FSInputFile(cbz_path, filename=file_name)
@@ -1020,7 +1025,7 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
                 pass
             sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - Том {volume}")
             
-            # Cache file_id (only for aiogram)
+            # Cache file_id
             if sent_msg.document:
                 store.cache_volume(manga_id, volume, "cbz", sent_msg.document.file_id, file_name)
         
