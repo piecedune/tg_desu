@@ -38,6 +38,13 @@ async def main() -> None:
     config.BOT_USERNAME = bot_info.username
     logger.info(f"Bot username: @{config.BOT_USERNAME}")
     
+    # Initialize Telethon for large file uploads (optional)
+    from telethon_client import init_telethon, close_telethon, is_telethon_available
+    if is_telethon_available():
+        await init_telethon()
+    else:
+        logger.info("Telethon not configured (API_ID/API_HASH missing). Large files will be compressed.")
+    
     # Include routers
     dispatcher.include_router(setup_routers())
     
@@ -54,6 +61,8 @@ async def main() -> None:
             await chapter_check_task
         except asyncio.CancelledError:
             pass
+        # Close Telethon connection
+        await close_telethon()
 
 
 if __name__ == "__main__":

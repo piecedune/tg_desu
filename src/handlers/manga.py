@@ -702,68 +702,111 @@ async def download_volume_pdf(callback: CallbackQuery) -> None:
             pass
         return
     
-    # Check file size (Telegram limit: 50MB for bots)
+    # Check file size (Telegram limit: 50MB for bots via Bot API)
     file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+    use_telethon = False
     
-    # If too large, try with compression
+    # If too large for Bot API, try Telethon first (up to 2GB)
     if file_size_mb > 50:
-        os.remove(pdf_path)
-        try:
-            await callback.message.edit_text(
-                f"⏳ Том слишком большой ({file_size_mb:.1f} MB).\n"
-                "Сжимаю изображения..."
-            )
-        except Exception:
-            pass
+        from telethon_client import is_telethon_available, send_large_file
         
-        # Retry with compression
-        pdf_path = await download_volume_as_pdf(
-            all_pages, 
-            f"{manga_title} - Том {volume}", 
-            compress=True,
-            max_dimension=1600,
-            quality=70
-        )
-        
-        if not pdf_path or not os.path.exists(pdf_path):
+        if is_telethon_available() and file_size_mb <= 2000:  # Telethon limit: 2GB
+            use_telethon = True
             try:
-                await callback.message.edit_text("❌ Не удалось создать сжатый PDF.")
+                await callback.message.edit_text(
+                    f"⏳ Том большой ({file_size_mb:.1f} MB).\n"
+                    "Отправляю через Telethon..."
+                )
             except Exception:
                 pass
-            return
-        
-        file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
-        
-        # If still too large after compression
-        if file_size_mb > 50:
+        else:
+            # No Telethon, try compression
             os.remove(pdf_path)
             try:
                 await callback.message.edit_text(
-                    f"❌ Том слишком большой даже после сжатия ({file_size_mb:.1f} MB).\n"
-                    "Лимит Telegram: 50 MB.\n\n"
-                    "💡 Скачайте главы по отдельности.",
+                    f"⏳ Том слишком большой ({file_size_mb:.1f} MB).\n"
+                    "Сжимаю изображения..."
+                )
+            except Exception:
+                pass
+            
+            # Retry with compression
+            pdf_path = await download_volume_as_pdf(
+                all_pages, 
+                f"{manga_title} - Том {volume}", 
+                compress=True,
+                max_dimension=1600,
+                quality=70
+            )
+            
+            if not pdf_path or not os.path.exists(pdf_path):
+                try:
+                    await callback.message.edit_text("❌ Не удалось создать сжатый PDF.")
+                except Exception:
+                    pass
+                return
+            
+            file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+            
+            # If still too large after compression
+            if file_size_mb > 50:
+                os.remove(pdf_path)
+                try:
+                    await callback.message.edit_text(
+                        f"❌ Том слишком большой даже после сжатия ({file_size_mb:.1f} MB).\n"
+                        "Лимит Telegram Bot API: 50 MB.\n\n"
+                        "💡 Настройте Telethon (API_ID, API_HASH) для файлов до 2 GB\n"
+                        "или скачайте главы по отдельности.",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                        ])
+                    )
+                except Exception:
+                    pass
+                return
+            
+            # Mark as compressed in filename
+            file_name = f"{manga_title} - Том {volume} (сжатый).pdf"
+    
+    try:
+        if use_telethon:
+            # Send via Telethon for large files
+            from telethon_client import send_large_file
+            
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            
+            sent = await send_large_file(
+                chat_id=callback.from_user.id,
+                file_path=pdf_path,
+                caption=f"📕 {manga_title} - Том {volume}"
+            )
+            
+            if not sent:
+                await callback.message.answer(
+                    "❌ Не удалось отправить через Telethon.",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
                     ])
                 )
+                return
+            
+            # Note: Telethon message doesn't have same file_id format as aiogram
+            # So we don't cache it for now
+        else:
+            # Send via aiogram (Bot API)
+            pdf_file = FSInputFile(pdf_path, filename=file_name)
+            try:
+                await callback.message.delete()
             except Exception:
                 pass
-            return
-        
-        # Mark as compressed in filename
-        file_name = f"{manga_title} - Том {volume} (сжатый).pdf"
-    
-    try:
-        pdf_file = FSInputFile(pdf_path, filename=file_name)
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - Том {volume}")
-        
-        # Cache file_id
-        if sent_msg.document:
-            store.cache_volume(manga_id, volume, "pdf", sent_msg.document.file_id, file_name)
+            sent_msg = await callback.message.answer_document(pdf_file, caption=f"📕 {manga_title} - Том {volume}")
+            
+            # Cache file_id (only for aiogram)
+            if sent_msg.document:
+                store.cache_volume(manga_id, volume, "pdf", sent_msg.document.file_id, file_name)
         
         # Mark all chapters in volume as read
         for ch in vol_chapters:
@@ -878,68 +921,108 @@ async def download_volume_cbz(callback: CallbackQuery) -> None:
             pass
         return
     
-    # Check file size (Telegram limit: 50MB for bots)
+    # Check file size (Telegram limit: 50MB for bots via Bot API)
     file_size_mb = os.path.getsize(cbz_path) / (1024 * 1024)
+    use_telethon = False
     
-    # If too large, try with compression
+    # If too large for Bot API, try Telethon first (up to 2GB)
     if file_size_mb > 50:
-        os.remove(cbz_path)
-        try:
-            await callback.message.edit_text(
-                f"⏳ Том слишком большой ({file_size_mb:.1f} MB).\n"
-                "Сжимаю изображения..."
-            )
-        except Exception:
-            pass
+        from telethon_client import is_telethon_available, send_large_file
         
-        # Retry with compression
-        cbz_path = await download_volume_as_cbz(
-            pages_with_info, 
-            f"{manga_title} - Том {volume}",
-            compress=True,
-            max_dimension=1600,
-            quality=70
-        )
-        
-        if not cbz_path or not os.path.exists(cbz_path):
+        if is_telethon_available() and file_size_mb <= 2000:  # Telethon limit: 2GB
+            use_telethon = True
             try:
-                await callback.message.edit_text("❌ Не удалось создать сжатый CBZ.")
+                await callback.message.edit_text(
+                    f"⏳ Том большой ({file_size_mb:.1f} MB).\n"
+                    "Отправляю через Telethon..."
+                )
             except Exception:
                 pass
-            return
-        
-        file_size_mb = os.path.getsize(cbz_path) / (1024 * 1024)
-        
-        # If still too large after compression
-        if file_size_mb > 50:
+        else:
+            # No Telethon, try compression
             os.remove(cbz_path)
             try:
                 await callback.message.edit_text(
-                    f"❌ Том слишком большой даже после сжатия ({file_size_mb:.1f} MB).\n"
-                    "Лимит Telegram: 50 MB.\n\n"
-                    "💡 Скачайте главы по отдельности.",
+                    f"⏳ Том слишком большой ({file_size_mb:.1f} MB).\n"
+                    "Сжимаю изображения..."
+                )
+            except Exception:
+                pass
+            
+            # Retry with compression
+            cbz_path = await download_volume_as_cbz(
+                pages_with_info, 
+                f"{manga_title} - Том {volume}",
+                compress=True,
+                max_dimension=1600,
+                quality=70
+            )
+            
+            if not cbz_path or not os.path.exists(cbz_path):
+                try:
+                    await callback.message.edit_text("❌ Не удалось создать сжатый CBZ.")
+                except Exception:
+                    pass
+                return
+            
+            file_size_mb = os.path.getsize(cbz_path) / (1024 * 1024)
+            
+            # If still too large after compression
+            if file_size_mb > 50:
+                os.remove(cbz_path)
+                try:
+                    await callback.message.edit_text(
+                        f"❌ Том слишком большой даже после сжатия ({file_size_mb:.1f} MB).\n"
+                        "Лимит Telegram Bot API: 50 MB.\n\n"
+                        "💡 Настройте Telethon (API_ID, API_HASH) для файлов до 2 GB\n"
+                        "или скачайте главы по отдельности.",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
+                        ])
+                    )
+                except Exception:
+                    pass
+                return
+            
+            # Mark as compressed in filename
+            file_name = f"{manga_title} - Том {volume} (сжатый).cbz"
+    
+    try:
+        if use_telethon:
+            # Send via Telethon for large files
+            from telethon_client import send_large_file
+            
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            
+            sent = await send_large_file(
+                chat_id=callback.from_user.id,
+                file_path=cbz_path,
+                caption=f"📦 {manga_title} - Том {volume}"
+            )
+            
+            if not sent:
+                await callback.message.answer(
+                    "❌ Не удалось отправить через Telethon.",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="◀ Назад", callback_data=f"chapters:{manga_id}:1")]
                     ])
                 )
+                return
+        else:
+            # Send via aiogram (Bot API)
+            cbz_file = FSInputFile(cbz_path, filename=file_name)
+            try:
+                await callback.message.delete()
             except Exception:
                 pass
-            return
-        
-        # Mark as compressed in filename
-        file_name = f"{manga_title} - Том {volume} (сжатый).cbz"
-    
-    try:
-        cbz_file = FSInputFile(cbz_path, filename=file_name)
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - Том {volume}")
-        
-        # Cache file_id
-        if sent_msg.document:
-            store.cache_volume(manga_id, volume, "cbz", sent_msg.document.file_id, file_name)
+            sent_msg = await callback.message.answer_document(cbz_file, caption=f"📦 {manga_title} - Том {volume}")
+            
+            # Cache file_id (only for aiogram)
+            if sent_msg.document:
+                store.cache_volume(manga_id, volume, "cbz", sent_msg.document.file_id, file_name)
         
         # Mark all chapters in volume as read
         for ch in vol_chapters:

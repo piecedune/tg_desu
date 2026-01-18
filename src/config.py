@@ -9,6 +9,10 @@ load_dotenv()
 # Telegram token
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
+# Telethon API credentials (get from https://my.telegram.org)
+API_ID = int(os.getenv("API_ID", "0")) or None
+API_HASH = os.getenv("API_HASH", "")
+
 # Desu API base URL
 DESU_BASE_URL = os.getenv("DESU_BASE_URL", "https://x.desu.city")
 
