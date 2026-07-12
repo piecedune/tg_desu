@@ -22,13 +22,13 @@ Telegram-бот для чтения манги с каталога Desu. Пои�
 ### 1. Клонируй репозиторий
 ```bash
 git clone https://github.com/your-username/tg_desu.git
-cd tg_desu/oes
+cd tg_desu
 ```
 
 ### 2. Создай виртуальное окружение
 ```bash
 python -m venv venv
-venv\Scripts\activate  # Windows
+venv\Scripts\activate.ps1  # Windows
 # source venv/bin/activate  # Linux/Mac
 ```
 
